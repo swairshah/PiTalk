@@ -676,27 +676,25 @@ final class JumpHandler {
     // MARK: - Helpers
     
     private func activateApp(_ appName: String) -> Bool {
-        let script = """
-        try
-            tell application "\(escapeForAppleScript(appName))" to activate
-            delay 0.05
-            tell application "System Events"
-                if exists process "\(escapeForAppleScript(appName))" then
-                    tell process "\(escapeForAppleScript(appName))"
-                        set frontmost to true
-                        try
-                            if (count of windows) > 0 then
-                                perform action "AXRaise" of window 1
-                            end if
-                        end try
-                    end tell
-                end if
-            end tell
-            return "ok"
-        end try
-        return "no"
-        """
-        return runAppleScript(script) == "ok"
+        // Use native NSRunningApplication for activation
+        let bundleIdentifier = bundleId(for: appName)
+        
+        // Try by bundle ID first
+        if !bundleIdentifier.isEmpty {
+            let apps = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier)
+            if let app = apps.first {
+                return app.activate(options: [.activateIgnoringOtherApps])
+            }
+        }
+        
+        // Fallback: find by name
+        if let app = NSWorkspace.shared.runningApplications.first(where: { 
+            $0.localizedName?.lowercased() == appName.lowercased() 
+        }) {
+            return app.activate(options: [.activateIgnoringOtherApps])
+        }
+        
+        return false
     }
     
     private func escapeForAppleScript(_ s: String) -> String {
