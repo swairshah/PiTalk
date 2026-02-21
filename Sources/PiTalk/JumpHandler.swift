@@ -364,13 +364,24 @@ final class JumpHandler {
     }
     
     private func isAppRunning(_ appName: String) -> Bool {
-        let script = """
-        if application "\(escapeForAppleScript(appName))" is running then
-            return "yes"
-        end if
-        return "no"
-        """
-        return runAppleScript(script) == "yes"
+        // Use native NSRunningApplication instead of AppleScript
+        let apps = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId(for: appName))
+        if !apps.isEmpty {
+            return true
+        }
+        // Fallback: check by name
+        return NSWorkspace.shared.runningApplications.contains { app in
+            app.localizedName?.lowercased() == appName.lowercased()
+        }
+    }
+    
+    private func bundleId(for appName: String) -> String {
+        switch appName.lowercased() {
+        case "ghostty": return "com.mitchellh.ghostty"
+        case "iterm", "iterm2": return "com.googlecode.iterm2"
+        case "terminal": return "com.apple.Terminal"
+        default: return ""
+        }
     }
     
     private func focusTerminalByTTY(_ tty: String) -> Bool {
@@ -694,32 +705,31 @@ final class JumpHandler {
     }
     
     private func runAppleScript(_ script: String, timeout: TimeInterval = 5.0) -> String {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        task.arguments = ["-e", script]
-        
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
-        
-        do {
-            try task.run()
-            
-            // Wait with timeout
-            let deadline = Date().addingTimeInterval(timeout)
-            while task.isRunning && Date() < deadline {
-                Thread.sleep(forTimeInterval: 0.05)
-            }
-            
-            if task.isRunning {
-                task.terminate()
-                return "timeout"
-            }
-        } catch {
+        // Use NSAppleScript for in-process execution (faster than spawning osascript)
+        var error: NSDictionary?
+        guard let appleScript = NSAppleScript(source: script) else {
             return "error"
         }
         
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "no"
+        // Execute with timeout using DispatchQueue
+        var result: String = "timeout"
+        let semaphore = DispatchSemaphore(value: 0)
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            let output = appleScript.executeAndReturnError(&error)
+            if error == nil {
+                result = output.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "ok"
+            } else {
+                result = "error"
+            }
+            semaphore.signal()
+        }
+        
+        let waitResult = semaphore.wait(timeout: .now() + timeout)
+        if waitResult == .timedOut {
+            return "timeout"
+        }
+        
+        return result
     }
 }
