@@ -100,6 +100,11 @@ final class VoiceMonitor: ObservableObject {
     var queuedCount: Int { sessions.filter { $0.activity == .queued }.count }
     var totalQueuedItems: Int { recentHistory.filter { $0.status == .queued }.count }
     
+    init() {
+        // Start monitoring immediately so the menubar icon shows correct state on launch
+        start()
+    }
+    
     func start() {
         guard timer == nil else { return }
         refresh()
@@ -267,25 +272,13 @@ final class VoiceMonitor: ObservableObject {
         debugLog("PiTalk: Jump requested for PID \(pid)")
         lastMessage = "Jumping to PID \(pid)..."
         
-        // Use the pi-statusd daemon for jump (same as pi-statusbar)
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            debugLog("PiTalk: Calling DaemonClient.jump(\(pid))")
-            let response = DaemonClient.jump(pid: Int32(pid))
-            debugLog("PiTalk: DaemonClient response: \(String(describing: response))")
-            DispatchQueue.main.async {
-                if let response = response, response.ok {
-                    if response.focused == true {
-                        self?.lastMessage = "Focused terminal for PID \(pid)"
-                    } else if response.openedAttach == true {
-                        self?.lastMessage = "Opened terminal for PID \(pid)"
-                    } else {
-                        self?.lastMessage = "Jump sent for PID \(pid)"
-                    }
-                } else {
-                    let errMsg = response?.error ?? "Jump failed - is pi-statusd running?"
-                    debugLog("PiTalk: Jump failed: \(errMsg)")
-                    self?.lastMessage = errMsg
-                }
+        // Use native Swift JumpHandler (no daemon needed)
+        JumpHandler.jumpAsync(to: pid) { [weak self] result in
+            debugLog("PiTalk: JumpHandler result: focused=\(result.focused), app=\(result.focusedApp ?? "nil"), msg=\(result.message ?? "nil")")
+            if result.focused {
+                self?.lastMessage = "Focused \(result.focusedApp ?? "terminal") for PID \(pid)"
+            } else {
+                self?.lastMessage = result.message ?? "Could not focus terminal"
             }
         }
     }

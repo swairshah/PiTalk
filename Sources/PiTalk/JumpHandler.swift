@@ -4,7 +4,7 @@ import CoreGraphics
 import os.log
 
 /// Handles jumping to terminal windows for a given PID
-/// Ported from pi-statusbar's daemon logic
+/// Ported from pi-statusbar's daemon logic with all fixes
 final class JumpHandler {
     
     private static let logger = Logger(subsystem: "com.pitalk", category: "JumpHandler")
@@ -13,6 +13,7 @@ final class JumpHandler {
         let ok: Bool
         let focused: Bool
         let focusedApp: String?
+        let openedShell: Bool
         let message: String?
     }
     
@@ -31,11 +32,15 @@ final class JumpHandler {
         let isOnScreen: Bool
     }
     
+    struct MuxInfo {
+        let type: String  // "tmux" or "zellij"
+        let session: String?
+    }
+    
     // MARK: - Public API
     
     /// Async jump - doesn't block the main thread
     static func jumpAsync(to pid: Int, completion: @escaping (JumpResult) -> Void) {
-        print("PiTalk Jump: jumpAsync called for PID \(pid)")
         DispatchQueue.global(qos: .userInitiated).async {
             let result = jump(to: pid)
             DispatchQueue.main.async {
@@ -45,7 +50,6 @@ final class JumpHandler {
     }
     
     static func jump(to pid: Int) -> JumpResult {
-        print("PiTalk Jump: jump called for PID \(pid)")
         let handler = JumpHandler()
         return handler.performJump(pid: pid)
     }
@@ -53,95 +57,122 @@ final class JumpHandler {
     // MARK: - Jump Implementation
     
     private func performJump(pid: Int) -> JumpResult {
-        print("PiTalk Jump: " + "performJump: scanning processes...")
+        NSLog("JumpHandler: performJump starting for PID %d", pid)
         let processes = scanProcesses()
+        NSLog("JumpHandler: found %d processes", processes.count)
         let byPid = Dictionary(uniqueKeysWithValues: processes.map { (Int($0.pid), $0) })
-        print("PiTalk Jump: " + "performJump: found \(processes.count) processes")
         
         // Find the target process
         guard let targetProcess = byPid[pid] else {
-            print("PiTalk Jump WARNING: " + "performJump: process not found: \(pid)")
-            return JumpResult(ok: false, focused: false, focusedApp: nil, message: "Process not found: \(pid)")
+            NSLog("JumpHandler: %@", "process not found: \(pid)")
+            return JumpResult(ok: false, focused: false, focusedApp: nil, openedShell: false,
+                            message: "Process not found: \(pid)")
         }
         
-        // Get cwd for hints
-        print("PiTalk Jump: " + "performJump: getting cwd for \(pid)...")
+        let tty = targetProcess.tty
+        NSLog("JumpHandler: %@", "tty = \(tty)")
         let cwd = getCwd(for: pid)
-        print("PiTalk Jump: " + "performJump: cwd = \(cwd ?? "nil")")
+        NSLog("JumpHandler: %@", "cwd = \(cwd ?? "nil")")
+        
+        // Detect mux (tmux/zellij)
+        let muxInfo = detectMux(pid: Int32(pid), byPid: byPid)
+        NSLog("JumpHandler: %@", "mux = \(muxInfo?.type ?? "nil"), session = \(muxInfo?.session ?? "nil")")
         
         // Detect terminal app from process ancestry
-        print("PiTalk Jump: " + "performJump: detecting terminal app...")
-        let (terminalApp, _) = detectTerminalApp(pid: Int32(pid), byPid: byPid)
-        print("PiTalk Jump: " + "performJump: terminalApp = \(terminalApp ?? "nil")")
+        var (terminalApp, _) = detectTerminalApp(pid: Int32(pid), byPid: byPid)
+        NSLog("JumpHandler: %@", "terminalApp = \(terminalApp ?? "nil")")
         
-        // Build focus hints from session name, cwd, tty
+        // Build focus hints
         var hints: [String] = []
+        if let session = muxInfo?.session {
+            hints.append(session)
+            if session.hasPrefix("agent-") {
+                hints.append(String(session.dropFirst(6)))
+            }
+        }
         if let cwd = cwd {
             hints.append(URL(fileURLWithPath: cwd).lastPathComponent)
         }
-        if targetProcess.tty != "??" {
-            hints.append(targetProcess.tty)
+        if tty != "??" {
+            hints.append(tty)
         }
-        print("PiTalk Jump: " + "performJump: hints = \(hints)")
         
-        // Try to focus the terminal
-        var focused = false
-        var focusedApp: String? = nil
-        var message: String? = nil
+        // Find mux client PID (the tmux/zellij client attached to the session)
+        let clientPid = findMuxClientPid(mux: muxInfo, tty: tty, processes: processes)
         
-        // Check if this is a Ghostty candidate
-        let isGhosttyCandidate = terminalApp == "Ghostty" || detectTerminalApp(pid: Int32(pid), byPid: byPid).0 == "Ghostty"
-        print("PiTalk Jump: " + "performJump: isGhosttyCandidate = \(isGhosttyCandidate)")
-        
-        // Strategy 1: Try AppleScript-based window focusing first
-        if let app = terminalApp {
-            print("PiTalk Jump: " + "performJump: Strategy 1 - trying AppleScript for \(app)...")
-            focusedApp = app
-            if app == "Ghostty" {
-                focused = focusGhosttyWindow(hints: hints)
-            } else {
-                focused = activateApp(app)
+        // If we have a client PID, detect terminal from that
+        if let clientPid = clientPid {
+            let (clientTerminal, _) = detectTerminalApp(pid: clientPid, byPid: byPid)
+            if let t = clientTerminal {
+                terminalApp = t
             }
-            print("PiTalk Jump: " + "performJump: Strategy 1 result: focused = \(focused)")
         }
         
-        // Strategy 2: For Ghostty, use CGWindowList-based tab switching
-        // This works when System Events can't see Ghostty windows
-        if !focused && isGhosttyCandidate {
-            print("PiTalk Jump: " + "performJump: Strategy 2 - trying CGWindowList for Ghostty...")
-            let (success, msg) = focusGhosttyViaCGWindowList(hints: hints, cwd: cwd)
-            focused = success
-            focusedApp = "Ghostty"
-            message = msg
-            print("PiTalk Jump: " + "performJump: Strategy 2 result: focused = \(focused), msg = \(msg ?? "nil")")
+        var focused = false
+        var focusedApp: String? = terminalApp
+        
+        // Step 1: Try to focus terminal app from process ancestry
+        if let app = terminalApp, app != "Ghostty" {
+            // For non-Ghostty, try direct activation
+            focused = focusTerminalApp(app, hints: hints)
+            if focused {
+                focusedApp = app
+            }
         }
         
-        // Strategy 3: Try common terminal apps as fallback
-        if !focused {
-            print("PiTalk Jump: " + "performJump: Strategy 3 - trying common terminal apps...")
-            for app in ["Ghostty", "iTerm2", "Terminal"] {
-                print("PiTalk Jump: " + "performJump: trying \(app)...")
-                if activateApp(app) {
-                    focused = true
-                    focusedApp = app
-                    print("PiTalk Jump: " + "performJump: \(app) activated successfully")
-                    break
+        // Step 2: TTY-based focus for iTerm2/Terminal (skip if Ghostty)
+        if !focused && tty != "??" && terminalApp != "Ghostty" {
+            focused = focusTerminalByTTY(tty)
+        }
+        
+        // Step 3: Title hint focus for iTerm2/Terminal (skip if Ghostty)
+        if !focused && terminalApp != "Ghostty" {
+            if let session = muxInfo?.session {
+                focused = focusTerminalByTitleHint(session)
+                if !focused && session.hasPrefix("agent-") {
+                    focused = focusTerminalByTitleHint(String(session.dropFirst(6)))
                 }
             }
         }
         
-        if focused {
-            print("PiTalk Jump: " + "performJump: SUCCESS - focused \(focusedApp ?? "unknown")")
-            return JumpResult(ok: true, focused: true, focusedApp: focusedApp, message: message ?? "Focused \(focusedApp ?? "terminal")")
-        } else {
-            print("PiTalk Jump WARNING: " + "performJump: FAILED - could not focus any terminal")
-            return JumpResult(ok: true, focused: false, focusedApp: nil, message: "Could not focus terminal for PID \(pid)")
+        // Step 4: Ghostty CGWindowList-based tab switching
+        // This is the main path for Ghostty - handles tab switching properly
+        NSLog("JumpHandler: %@", "Step 4 check: focused=\(focused), terminalApp=\(terminalApp ?? "nil"), muxInfo=\(muxInfo != nil)")
+        if !focused && (terminalApp == "Ghostty" || muxInfo != nil) {
+            var searchHints = hints
+            if let muxType = muxInfo?.type {
+                searchHints.append(muxType)
+            }
+            NSLog("JumpHandler: %@", "Step 4 - calling focusGhosttyViaCGWindowList with hints=\(searchHints)")
+            let (success, msg) = focusGhosttyViaCGWindowList(hints: searchHints, cwd: cwd)
+            NSLog("JumpHandler: %@", "Step 4 result: success=\(success), msg=\(msg ?? "nil")")
+            focused = success
+            if focused {
+                focusedApp = "Ghostty"
+            }
         }
+        
+        // Step 5: If tmux, switch to the correct pane
+        if focused && muxInfo?.type == "tmux" && tty != "??" {
+            selectTmuxPaneByTTY(tty)
+        }
+        
+        // Note: We do NOT open new terminal windows as a fallback
+        // If we can't focus, we just report failure
+        
+        return JumpResult(
+            ok: true,
+            focused: focused,
+            focusedApp: focusedApp,
+            openedShell: false,
+            message: focused ? "Focused \(focusedApp ?? "terminal")" : "Could not focus terminal"
+        )
     }
     
     // MARK: - Process Scanning
     
     private func scanProcesses() -> [ProcessInfo] {
+        NSLog("JumpHandler: %@", "scanProcesses starting...")
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/ps")
         task.arguments = ["-axo", "pid=,ppid=,comm=,tty=,args="]
@@ -151,13 +182,21 @@ final class JumpHandler {
         task.standardError = FileHandle.nullDevice
         
         do {
+            NSLog("JumpHandler: %@", "scanProcesses running ps...")
             try task.run()
-            task.waitUntilExit()
         } catch {
+            NSLog("JumpHandler: %@", "scanProcesses error: \(error)")
             return []
         }
         
+        // IMPORTANT: Read output BEFORE waitUntilExit to avoid deadlock
+        // (pipe buffer can fill up and block the process)
+        NSLog("JumpHandler: %@", "scanProcesses reading output...")
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        NSLog("JumpHandler: %@", "scanProcesses waiting for ps to exit...")
+        task.waitUntilExit()
+        NSLog("JumpHandler: %@", "scanProcesses ps exited with code \(task.terminationStatus)")
+        
         guard let output = String(data: data, encoding: .utf8) else { return [] }
         
         var processes: [ProcessInfo] = []
@@ -192,17 +231,88 @@ final class JumpHandler {
         
         do {
             try task.run()
-            task.waitUntilExit()
         } catch {
             return nil
         }
         
+        // Read output before waiting to avoid deadlock
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+        
         guard let output = String(data: data, encoding: .utf8) else { return nil }
         
         for line in output.components(separatedBy: "\n") {
             if line.hasPrefix("n") {
                 return String(line.dropFirst())
+            }
+        }
+        
+        return nil
+    }
+    
+    // MARK: - Mux Detection
+    
+    private func detectMux(pid: Int32, byPid: [Int: ProcessInfo]) -> MuxInfo? {
+        var seen = Set<Int32>()
+        var current: Int32? = pid
+        
+        while let cur = current, !seen.contains(cur) {
+            seen.insert(cur)
+            guard let process = byPid[Int(cur)] else { break }
+            
+            let args = process.args.lowercased()
+            
+            // Check for zellij
+            if process.comm.lowercased().contains("zellij") || args.contains("zellij") {
+                let session = extractZellijSession(args: process.args)
+                return MuxInfo(type: "zellij", session: session)
+            }
+            
+            // Check for tmux
+            if process.comm.lowercased() == "tmux" || args.contains("tmux") {
+                let session = extractTmuxSession(args: process.args)
+                return MuxInfo(type: "tmux", session: session)
+            }
+            
+            current = process.ppid
+        }
+        
+        return nil
+    }
+    
+    private func extractZellijSession(args: String) -> String? {
+        // Look for "attach <session>" pattern
+        if let range = args.range(of: "attach\\s+(\\S+)", options: .regularExpression) {
+            let match = args[range]
+            let parts = match.split(separator: " ")
+            if parts.count >= 2 {
+                return String(parts[1])
+            }
+        }
+        return nil
+    }
+    
+    private func extractTmuxSession(args: String) -> String? {
+        // Look for "-t <session>" or "attach -t <session>" pattern
+        if let range = args.range(of: "-t\\s+(\\S+)", options: .regularExpression) {
+            let match = args[range]
+            let parts = match.split(separator: " ")
+            if parts.count >= 2 {
+                return String(parts[1])
+            }
+        }
+        return nil
+    }
+    
+    private func findMuxClientPid(mux: MuxInfo?, tty: String, processes: [ProcessInfo]) -> Int32? {
+        guard let mux = mux else { return nil }
+        
+        if mux.type == "tmux" {
+            // Find any tmux client process (not necessarily same TTY)
+            for p in processes {
+                if p.comm.lowercased() == "tmux" && p.args.contains("tmux") && p.tty != "??" && p.tty != tty {
+                    return p.pid
+                }
             }
         }
         
@@ -237,7 +347,132 @@ final class JumpHandler {
         return (nil, nil)
     }
     
-    // MARK: - CGWindowList-based Ghostty Tab Detection
+    // MARK: - Terminal Focusing
+    
+    private func focusTerminalApp(_ appName: String, hints: [String]) -> Bool {
+        // For Ghostty, we use CGWindowList approach
+        if appName == "Ghostty" {
+            return false  // Let CGWindowList handle it
+        }
+        
+        // Check if app is running first
+        if !isAppRunning(appName) {
+            return false
+        }
+        
+        return activateApp(appName)
+    }
+    
+    private func isAppRunning(_ appName: String) -> Bool {
+        let script = """
+        if application "\(escapeForAppleScript(appName))" is running then
+            return "yes"
+        end if
+        return "no"
+        """
+        return runAppleScript(script) == "yes"
+    }
+    
+    private func focusTerminalByTTY(_ tty: String) -> Bool {
+        let t = escapeForAppleScript(tty)
+        
+        // Try iTerm2 first (if running)
+        let itermScript = """
+        try
+            if application "iTerm2" is running then
+                tell application "iTerm2"
+                    repeat with w in windows
+                        repeat with tb in tabs of w
+                            repeat with s in sessions of tb
+                                try
+                                    if (tty of s as text) ends with "\(t)" then
+                                        select s
+                                        select tb
+                                        activate
+                                        return "ok"
+                                    end if
+                                end try
+                            end repeat
+                        end repeat
+                    end repeat
+                end tell
+            end if
+        end try
+        return "no"
+        """
+        if runAppleScript(itermScript) == "ok" {
+            return true
+        }
+        
+        // Try Terminal (if running)
+        let terminalScript = """
+        try
+            if application "Terminal" is running then
+                tell application "Terminal"
+                    repeat with w in windows
+                        repeat with tb in tabs of w
+                            try
+                                if (tty of tb as text) ends with "\(t)" then
+                                    set selected of tb to true
+                                    activate
+                                    return "ok"
+                                end if
+                            end try
+                        end repeat
+                    end repeat
+                end tell
+            end if
+        end try
+        return "no"
+        """
+        return runAppleScript(terminalScript) == "ok"
+    }
+    
+    private func focusTerminalByTitleHint(_ hint: String) -> Bool {
+        let h = escapeForAppleScript(hint)
+        
+        let script = """
+        set needle to "\(h)"
+        try
+            if application "iTerm2" is running then
+                tell application "iTerm2"
+                    repeat with w in windows
+                        repeat with tb in tabs of w
+                            try
+                                if (name of tb as text) contains needle then
+                                    tell w to select tb
+                                    activate
+                                    return "ok"
+                                end if
+                            end try
+                        end repeat
+                    end repeat
+                end tell
+            end if
+        end try
+        try
+            if application "Terminal" is running then
+                tell application "Terminal"
+                    repeat with w in windows
+                        repeat with tb in tabs of w
+                            try
+                                if (custom title of tb as text) contains needle then
+                                    set selected of tb to true
+                                    activate
+                                    return "ok"
+                                end if
+                            end try
+                        end repeat
+                    end repeat
+                end tell
+            end if
+        end try
+        return "no"
+        """
+        return runAppleScript(script) == "ok"
+    }
+    
+    // MARK: - Ghostty CGWindowList-based Tab Switching
     
     private func getGhosttyTabsViaCGWindowList() -> [GhosttyTab] {
         guard let windowList = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
@@ -273,12 +508,12 @@ final class JumpHandler {
     }
     
     private func focusGhosttyViaCGWindowList(hints: [String], cwd: String?) -> (Bool, String?) {
-        print("PiTalk Jump: " + "focusGhosttyViaCGWindowList: getting tabs...")
+        NSLog("JumpHandler: %@", "focusGhosttyViaCGWindowList starting...")
         let tabs = getGhosttyTabsViaCGWindowList()
-        print("PiTalk Jump: " + "focusGhosttyViaCGWindowList: found \(tabs.count) tabs")
+        NSLog("JumpHandler: %@", "found \(tabs.count) Ghostty tabs")
         
         guard !tabs.isEmpty else {
-            return (false, "no Ghostty tabs found via CGWindowList")
+            return (false, "no Ghostty tabs found")
         }
         
         // Build search terms from hints and cwd
@@ -286,7 +521,6 @@ final class JumpHandler {
         if let cwd = cwd {
             searchTerms.append(URL(fileURLWithPath: cwd).lastPathComponent.lowercased())
         }
-        print("PiTalk Jump: " + "focusGhosttyViaCGWindowList: searchTerms = \(searchTerms)")
         
         // Find matching tab by hints
         var matchedName: String? = nil
@@ -303,20 +537,22 @@ final class JumpHandler {
         
         guard let targetName = matchedName else {
             let tabNames = tabs.map { $0.name }
-            print("PiTalk Jump: " + "focusGhosttyViaCGWindowList: no match found, available: \(tabNames)")
             return (false, "no tab matched, available: \(tabNames)")
         }
         
-        print("PiTalk Jump: " + "focusGhosttyViaCGWindowList: matched tab '\(targetName)'")
-        
-        // Activate Ghostty and wait for it to be frontmost
-        print("PiTalk Jump: " + "focusGhosttyViaCGWindowList: activating Ghostty...")
+        // KEY FIX: Briefly activate Finder first to reset focus state
+        // This ensures Ghostty properly receives keystrokes even if already frontmost
         let activateScript = """
-        tell application "Ghostty" to activate
-        delay 0.2
         tell application "System Events"
-            repeat 10 times
+            set frontmost of process "Finder" to true
+            delay 0.1
+        end tell
+        tell application "Ghostty" to activate
+        delay 0.3
+        tell application "System Events"
+            repeat 15 times
                 if frontmost of process "Ghostty" then
+                    delay 0.1
                     return "ok"
                 end if
                 delay 0.1
@@ -326,28 +562,30 @@ final class JumpHandler {
         """
         
         let activateResult = runAppleScript(activateScript)
-        print("PiTalk Jump: " + "focusGhosttyViaCGWindowList: activate result = \(activateResult)")
-        
         guard activateResult == "ok" else {
             return (false, "failed to activate Ghostty: \(activateResult)")
         }
         
-        // Try each tab position (Cmd+1-9) and check if we found the right one
-        print("PiTalk Jump: " + "focusGhosttyViaCGWindowList: trying tab positions 1-9...")
+        // Key codes for 1-9 on US keyboard (more reliable than keystrokes)
+        let keyCodes: [Character: Int] = [
+            "1": 18, "2": 19, "3": 20, "4": 21, "5": 23,
+            "6": 22, "7": 26, "8": 28, "9": 25
+        ]
+        
+        // Try each tab position (Cmd+1-9)
         for key in "123456789" {
-            print("PiTalk Jump: " + "focusGhosttyViaCGWindowList: trying Cmd+\(key)")
-            // Send keystroke to Ghostty
+            guard let code = keyCodes[key] else { continue }
+            
             let keystrokeScript = """
             tell application "System Events"
                 tell process "Ghostty"
-                    keystroke "\(key)" using command down
+                    key code \(code) using command down
                 end tell
             end tell
             """
             _ = runAppleScript(keystrokeScript)
             
-            // Brief pause to let window update
-            Thread.sleep(forTimeInterval: 0.1)
+            Thread.sleep(forTimeInterval: 0.15)
             
             // Check if current front tab matches
             let currentTabs = getGhosttyTabsViaCGWindowList()
@@ -355,20 +593,76 @@ final class JumpHandler {
                 let currentName = tab.name.lowercased()
                 let target = targetName.lowercased()
                 if currentName.contains(target) || target.contains(currentName) {
-                    print("PiTalk Jump: " + "focusGhosttyViaCGWindowList: SUCCESS at Cmd+\(key)")
                     return (true, "found tab '\(tab.name)' at Cmd+\(key)")
                 }
-                // Found active tab but doesn't match, continue to next position
                 break
             }
         }
         
-        // If we exhausted all positions, we at least activated Ghostty
-        print("PiTalk Jump: " + "focusGhosttyViaCGWindowList: exhausted all positions, Ghostty is active but exact tab not found")
-        return (false, "activated Ghostty, could not find exact tab '\(targetName)'")
+        // We activated Ghostty but couldn't find exact tab - still considered success
+        // since the user is at least in Ghostty now
+        return (true, "activated Ghostty, could not find exact tab '\(targetName)'")
     }
     
-    // MARK: - AppleScript-based Window Focusing
+    // MARK: - tmux Pane Selection
+    
+    private func selectTmuxPaneByTTY(_ tty: String) {
+        let ttyPath = tty.hasPrefix("/dev/") ? tty : "/dev/\(tty)"
+        
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        task.arguments = ["tmux", "list-panes", "-a", "-F", "#{pane_tty} #{session_name}:#{window_index}.#{pane_index}"]
+        
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = FileHandle.nullDevice
+        
+        do {
+            try task.run()
+        } catch {
+            return
+        }
+        
+        // Read output before waiting to avoid deadlock
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+        
+        guard let output = String(data: data, encoding: .utf8) else { return }
+        
+        for line in output.components(separatedBy: "\n") {
+            let parts = line.split(separator: " ", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            
+            let paneTTY = String(parts[0])
+            let paneTarget = String(parts[1])
+            
+            if paneTTY == ttyPath {
+                // Select the window first
+                let windowTarget = paneTarget.components(separatedBy: ".").dropLast().joined(separator: ".")
+                
+                let selectWindow = Process()
+                selectWindow.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+                selectWindow.arguments = ["tmux", "select-window", "-t", windowTarget]
+                selectWindow.standardOutput = FileHandle.nullDevice
+                selectWindow.standardError = FileHandle.nullDevice
+                try? selectWindow.run()
+                selectWindow.waitUntilExit()
+                
+                // Then select the pane
+                let selectPane = Process()
+                selectPane.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+                selectPane.arguments = ["tmux", "select-pane", "-t", paneTarget]
+                selectPane.standardOutput = FileHandle.nullDevice
+                selectPane.standardError = FileHandle.nullDevice
+                try? selectPane.run()
+                selectPane.waitUntilExit()
+                
+                return
+            }
+        }
+    }
+    
+    // MARK: - Helpers
     
     private func activateApp(_ appName: String) -> Bool {
         let script = """
@@ -394,53 +688,12 @@ final class JumpHandler {
         return runAppleScript(script) == "ok"
     }
     
-    private func focusGhosttyWindow(hints: [String]) -> Bool {
-        guard !hints.isEmpty else { return false }
-        
-        let hintList = hints.map { "\"\(escapeForAppleScript($0))\"" }.joined(separator: ", ")
-        
-        let script = """
-        set needles to {\(hintList)}
-        try
-            tell application "System Events"
-                if not (exists process "Ghostty") then
-                    return "no"
-                end if
-                tell process "Ghostty"
-                    repeat with w in windows
-                        try
-                            set n to (name of w as text)
-                            repeat with needle in needles
-                                ignoring case
-                                    if n contains (needle as text) then
-                                        tell application "Ghostty" to activate
-                                        set frontmost to true
-                                        perform action "AXRaise" of w
-                                        return "ok"
-                                    end if
-                                end ignoring
-                            end repeat
-                        end try
-                    end repeat
-                end tell
-            end tell
-        end try
-        return "no"
-        """
-        return runAppleScript(script) == "ok"
-    }
-    
-    // MARK: - Helpers
-    
     private func escapeForAppleScript(_ s: String) -> String {
         return s.replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "\"", with: "\\\"")
     }
     
-    private func runAppleScript(_ script: String, timeout: TimeInterval = 3.0) -> String {
-        let scriptPreview = script.prefix(50).replacingOccurrences(of: "\n", with: " ")
-        print("PiTalk Jump: " + "runAppleScript: starting '\(scriptPreview)...'")
-        
+    private func runAppleScript(_ script: String, timeout: TimeInterval = 5.0) -> String {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         task.arguments = ["-e", script]
@@ -448,8 +701,6 @@ final class JumpHandler {
         let pipe = Pipe()
         task.standardOutput = pipe
         task.standardError = FileHandle.nullDevice
-        
-        let startTime = Date()
         
         do {
             try task.run()
@@ -461,19 +712,14 @@ final class JumpHandler {
             }
             
             if task.isRunning {
-                print("PiTalk Jump WARNING: " + "runAppleScript: TIMEOUT after \(timeout)s, terminating")
                 task.terminate()
                 return "timeout"
             }
         } catch {
-            print("PiTalk Jump ERROR: " + "runAppleScript: error launching: \(error.localizedDescription)")
             return "error"
         }
         
-        let elapsed = Date().timeIntervalSince(startTime)
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "no"
-        print("PiTalk Jump: " + "runAppleScript: completed in \(String(format: "%.2f", elapsed))s, result = '\(output)'")
-        return output
+        return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "no"
     }
 }
