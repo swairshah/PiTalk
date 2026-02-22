@@ -184,15 +184,38 @@ final class JumpHandler {
         // This is the main path for Ghostty - handles tab switching properly
         NSLog("JumpHandler: %@", "Step 4 check: focused=\(focused), terminalApp=\(terminalApp ?? "nil"), muxInfo=\(muxInfo != nil)")
         if !focused && (terminalApp == "Ghostty" || muxInfo != nil) {
-            var searchHints = hints
-            // Add mux session name first (more specific) then mux type
-            if let muxSession = muxInfo?.session {
-                searchHints.insert(muxSession, at: 0)  // Put session name first for priority matching
+            // IMPORTANT: zellij sessions often share one Ghostty tab (eg. "dev1").
+            // Prioritize per-session hints (cwd/tty) over mux session name to avoid always matching "dev1".
+            var searchHints: [String] = []
+            let muxType = muxInfo?.type
+            
+            if muxType == "zellij" {
+                if let cwd = cwd {
+                    searchHints.append(URL(fileURLWithPath: cwd).lastPathComponent)
+                }
+                if tty != "??" {
+                    searchHints.append(tty)
+                }
+                if let muxSession = muxInfo?.session {
+                    searchHints.append(muxSession)
+                }
+                // Keep any additional hints (deduped, original order)
+                for h in hints where !searchHints.contains(h) {
+                    searchHints.append(h)
+                }
+            } else {
+                searchHints = hints
+                // For tmux, session name is usually the most precise top-level hint.
+                if let muxSession = muxInfo?.session, !searchHints.contains(muxSession) {
+                    searchHints.insert(muxSession, at: 0)
+                }
             }
-            if let muxType = muxInfo?.type {
+            
+            if let muxType {
                 searchHints.append(muxType)
             }
-            let isTmux = muxInfo?.type == "tmux"
+            
+            let isTmux = muxType == "tmux"
             NSLog("JumpHandler: %@", "Step 4 - calling focusGhosttyViaCGWindowList with hints=\(searchHints), isTmux=\(isTmux)")
             let (success, msg) = focusGhosttyViaCGWindowList(hints: searchHints, cwd: cwd, isTmux: isTmux)
             NSLog("JumpHandler: %@", "Step 4 result: success=\(success), msg=\(msg ?? "nil")")
@@ -205,6 +228,11 @@ final class JumpHandler {
         // Step 5: If tmux, switch to the correct pane
         if focused && muxInfo?.type == "tmux" && tty != "??" {
             selectTmuxPaneByTTY(tty)
+        }
+        
+        // Step 5b: If zellij, deterministically switch to tab containing the pi pane for this cwd
+        if focused && muxInfo?.type == "zellij", let zellijSession = muxInfo?.session {
+            selectZellijTabForSession(session: zellijSession, cwd: cwd, tty: tty)
         }
         
         // Note: We do NOT open new terminal windows as a fallback
@@ -919,6 +947,109 @@ final class JumpHandler {
                 
                 return
             }
+        }
+    }
+    
+    private func selectZellijTabForSession(session: String, cwd: String?, tty: String) {
+        NSLog("JumpHandler: zellij select start: session=%@ cwd=%@ tty=%@", session, cwd ?? "nil", tty)
+        
+        let dumpTask = Process()
+        dumpTask.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        dumpTask.arguments = ["zellij", "-s", session, "action", "dump-layout"]
+        
+        let pipe = Pipe()
+        dumpTask.standardOutput = pipe
+        dumpTask.standardError = FileHandle.nullDevice
+        
+        do {
+            try dumpTask.run()
+        } catch {
+            NSLog("JumpHandler: zellij dump-layout failed: %@", error.localizedDescription)
+            return
+        }
+        
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        dumpTask.waitUntilExit()
+        guard let layout = String(data: data, encoding: .utf8), !layout.isEmpty else {
+            NSLog("JumpHandler: zellij dump-layout returned empty output")
+            return
+        }
+        
+        struct ZellijPiTab {
+            let index: Int
+            let name: String
+            let paneCwd: String
+        }
+        
+        var currentTabIndex = 0
+        var currentTabName = ""
+        var piTabs: [ZellijPiTab] = []
+        
+        for raw in layout.components(separatedBy: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            
+            if line.hasPrefix("tab name=") {
+                currentTabIndex += 1
+                if let nameStart = line.range(of: "name=\""),
+                   let nameEnd = line[nameStart.upperBound...].range(of: "\"") {
+                    currentTabName = String(line[nameStart.upperBound..<nameEnd.lowerBound])
+                } else {
+                    currentTabName = "tab-\(currentTabIndex)"
+                }
+                continue
+            }
+            
+            // We only care about pi panes.
+            if line.contains("pane command=\"pi\"") {
+                var paneCwd = ""
+                if let cwdStart = line.range(of: "cwd=\""),
+                   let cwdEnd = line[cwdStart.upperBound...].range(of: "\"") {
+                    paneCwd = String(line[cwdStart.upperBound..<cwdEnd.lowerBound])
+                }
+                piTabs.append(ZellijPiTab(index: currentTabIndex, name: currentTabName, paneCwd: paneCwd))
+            }
+        }
+        
+        guard !piTabs.isEmpty else {
+            NSLog("JumpHandler: zellij no pi tabs found in layout")
+            return
+        }
+        
+        let project = cwd.map { URL(fileURLWithPath: $0).lastPathComponent.lowercased() }
+        
+        var target: ZellijPiTab? = nil
+        if let project {
+            target = piTabs.first(where: { tab in
+                let pane = tab.paneCwd.lowercased()
+                return pane == project || project.hasSuffix("/\(pane)") || pane.hasSuffix(project)
+            })
+        }
+        
+        // Deterministic fallback: if only one pi tab exists, use it.
+        if target == nil && piTabs.count == 1 {
+            target = piTabs[0]
+        }
+        
+        guard let target else {
+            let debugTabs = piTabs.map { "\($0.index):\($0.name):\($0.paneCwd)" }.joined(separator: ", ")
+            NSLog("JumpHandler: zellij no unique target tab. project=%@ piTabs=[%@]", project ?? "nil", debugTabs)
+            return
+        }
+        
+        NSLog("JumpHandler: zellij switching to tab index=%d name=%@ paneCwd=%@", target.index, target.name, target.paneCwd)
+        
+        let goTask = Process()
+        goTask.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        goTask.arguments = ["zellij", "-s", session, "action", "go-to-tab", "\(target.index)"]
+        goTask.standardOutput = FileHandle.nullDevice
+        goTask.standardError = FileHandle.nullDevice
+        
+        do {
+            try goTask.run()
+            goTask.waitUntilExit()
+            NSLog("JumpHandler: zellij go-to-tab finished with status %d", goTask.terminationStatus)
+        } catch {
+            NSLog("JumpHandler: zellij go-to-tab failed: %@", error.localizedDescription)
         }
     }
     
