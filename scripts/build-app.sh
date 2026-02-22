@@ -5,7 +5,7 @@ set -e
 cd "$(dirname "$0")/.."
 
 # Version - update this for releases
-VERSION="1.0.3"
+VERSION="1.0.4"
 
 echo "🔨 Building PiTalk.app v$VERSION..."
 
@@ -37,7 +37,16 @@ cp "$BINARY_PATH/ptts" "$APP_DIR/Contents/MacOS/"
 # Copy app icon
 cp Resources/icons/AppIcon.icns "$APP_DIR/Contents/Resources/"
 
-# Copy menubar icons
+# Copy SPM resource bundle (contains Assets.car and Resources/)
+if [ -d "$BINARY_PATH/PiTalk_PiTalk.bundle" ]; then
+    echo "Copying resource bundle PiTalk_PiTalk.bundle..."
+    cp -R "$BINARY_PATH/PiTalk_PiTalk.bundle" "$APP_DIR/Contents/Resources/"
+else
+    echo "⚠️  Warning: PiTalk_PiTalk.bundle not found at $BINARY_PATH"
+    echo "   The app may fail to launch without its resource bundle."
+fi
+
+# Copy menubar icons (also keep at top level for backward compat)
 cp Sources/PiTalk/Resources/menubar_on.png "$APP_DIR/Contents/Resources/"
 cp Sources/PiTalk/Resources/menubar_off.png "$APP_DIR/Contents/Resources/"
 
