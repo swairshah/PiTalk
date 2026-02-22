@@ -1745,22 +1745,6 @@ struct SettingsTabView: View {
     
     var body: some View {
         Form {
-            Section {
-                VStack(spacing: 6) {
-                    Image(nsImage: NSApp.applicationIconImage)
-                        .resizable()
-                        .frame(width: 48, height: 48)
-                    Text("PiTalk")
-                        .font(.title3)
-                        .fontWeight(.semibold)
-                    Text("Voice for Pi")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 2)
-            }
-
             Section("ElevenLabs API") {
                 HStack {
                     if showApiKey {
@@ -2336,30 +2320,57 @@ struct AboutView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                VStack(spacing: 6) {
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable()
+                        .frame(width: 56, height: 56)
+                    Text("PiTalk")
+                        .font(.title3)
+                        .fontWeight(.semibold)
+                    Text("Voice for Pi")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 2)
+
                 VStack(alignment: .leading, spacing: 8) {
                     Text("About")
                         .font(.title2)
                         .fontWeight(.semibold)
-                    Text("We package the pocket-tts binary with the app, which runs a local server that lets any applications (including your coding agent - https://pi.dev!) be send text which PiTalk says out loud. We ship a command line utility `ptts` so you can make any application talk via PiTalk and we ship a pi extension so the pi agent gets a voice via PiTalk.")
-                        .font(.callout)
-                        .foregroundColor(.secondary)
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Credits")
-                        .font(.headline)
-                    Text("PiTalk is built on top of the PocketTTS ecosystem. Huge thanks to the original authors.")
+                    Text("PiTalk is a macOS menu bar voice companion for Pi. It reads Pi telemetry for live status and uses a local pi-talk extension to route <voice> output into the PiTalk speech queue.")
                         .font(.callout)
                         .foregroundColor(.secondary)
                 }
 
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Pocket TTS")
+                    Text("Required Pi Extensions")
                         .font(.headline)
-                    Text("The original model by Kyutai Labs. Fast, compact, and high-quality local TTS.")
+                    Text("Install these in Pi for full functionality:")
                         .font(.callout)
                         .foregroundColor(.secondary)
-                    Link("github.com/kyutai-labs/pocket-tts", destination: URL(string: "https://github.com/kyutai-labs/pocket-tts")!)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        CodeRow(code: "pi install npm:pi-telemetry", description: "Telemetry data source")
+                        CodeRow(code: "/pi-telemetry --data", description: "Enable telemetry in active Pi session")
+                        CodeRow(code: "pi install npm:@swairshah/pi-talk", description: "PiTalk voice routing extension")
+                    }
+                }
+                .padding()
+                .background(Color(NSColor.controlBackgroundColor))
+                .cornerRadius(10)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.secondary.opacity(0.1), lineWidth: 1)
+                )
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Credits")
+                        .font(.headline)
+                    Text("PiTalk’s status/jump UX is heavily inspired by Pi Status Bar.")
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                    Link("github.com/jademind/pi-statusbar", destination: URL(string: "https://github.com/jademind/pi-statusbar")!)
                         .font(.caption)
                 }
                 .padding()
@@ -2371,12 +2382,14 @@ struct AboutView: View {
                 )
 
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("pocket-tts (Rust implementation)")
+                    Text("Project Repository")
                         .font(.headline)
-                    Text("Native Rust implementation by babybirdprd used by PiTalk under the hood.")
+                    Text("PiTalk is maintained at the repository below. You can open issues, request features, and report bugs there.")
                         .font(.callout)
                         .foregroundColor(.secondary)
-                    Link("github.com/babybirdprd/pocket-tts", destination: URL(string: "https://github.com/babybirdprd/pocket-tts")!)
+                    Link("github.com/swairshah/PiTalk", destination: URL(string: "https://github.com/swairshah/PiTalk")!)
+                        .font(.caption)
+                    Link("github.com/swairshah/PiTalk/issues", destination: URL(string: "https://github.com/swairshah/PiTalk/issues")!)
                         .font(.caption)
                 }
                 .padding()

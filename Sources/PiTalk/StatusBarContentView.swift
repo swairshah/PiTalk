@@ -326,14 +326,14 @@ struct StatusBarIcon: View {
         // White when server is disabled (to indicate "off" state)
         guard serverEnabled else { return .white }
         
-        // Default color when no API key
-        guard serverOnline else { return .labelColor }
+        // White when API key/server is offline
+        guard serverOnline else { return .white }
         
-        // Green when any session is waiting for input, otherwise default (white/black based on appearance)
+        // Green when any session is waiting for input, otherwise white
         if summary.color == "green" {
             return .systemGreen
         }
-        return .labelColor  // Adapts to light/dark mode
+        return .white
     }
     
     private var menuBarImage: NSImage {
