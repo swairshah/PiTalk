@@ -8,8 +8,8 @@ cd "$(dirname "$0")/.."
 source ~/.env 2>/dev/null || true
 
 # Release script for PiTalk
-# Usage: ./scripts/release.sh 1.0.2
-#        ./scripts/release.sh 1.0.2 --skip-notarize
+# Usage: ./scripts/release.sh 1.0.3
+#        ./scripts/release.sh 1.0.3 --skip-notarize
 #
 # Prerequisites:
 #   - Developer ID Application certificate in keychain
@@ -43,7 +43,7 @@ done
 
 if [ -z "$VERSION" ]; then
     echo "Usage: ./scripts/release.sh <version>"
-    echo "Example: ./scripts/release.sh 1.0.2"
+    echo "Example: ./scripts/release.sh 1.0.3"
     exit 1
 fi
 
@@ -79,9 +79,9 @@ echo -e "${YELLOW}Cleaning previous builds...${NC}"
 rm -rf dist
 mkdir -p dist
 
-# 3. Build
-echo -e "${YELLOW}🔨 Building...${NC}"
-./scripts/build-app.sh
+# 3. Build (always universal for releases)
+echo -e "${YELLOW}🔨 Building universal binary (arm64 + x86_64)...${NC}"
+./scripts/build-app.sh --universal
 
 APP_DIR=".build/PiTalk.app"
 
@@ -100,10 +100,34 @@ echo -e "${YELLOW}Verifying signature...${NC}"
 codesign --verify --verbose=2 "$APP_DIR"
 spctl --assess --verbose=2 "$APP_DIR" || true
 
-# 5. Create DMG
+if [ "$SKIP_NOTARIZE" = false ]; then
+    # 5. Notarize the app (via ZIP)
+    echo -e "${YELLOW}📦 Creating ZIP for app notarization...${NC}"
+    ditto -c -k --keepParent "$APP_DIR" ".build/$APP_NAME.zip"
+
+    echo -e "${YELLOW}📤 Submitting app for notarization...${NC}"
+    xcrun notarytool submit ".build/$APP_NAME.zip" \
+        --apple-id "$APPLE_ID" \
+        --password "$APPLE_APP_PASSWORD" \
+        --team-id "$TEAM_ID" \
+        --wait
+
+    # Staple the app
+    echo -e "${YELLOW}📎 Stapling notarization ticket to app...${NC}"
+    xcrun stapler staple "$APP_DIR"
+
+    # Verify
+    echo -e "${YELLOW}Verifying app notarization...${NC}"
+    xcrun stapler validate "$APP_DIR"
+    spctl --assess --verbose=2 "$APP_DIR"
+fi
+
+# 6. Create DMG
 echo -e "${YELLOW}📀 Creating DMG...${NC}"
 DMG_PATH="dist/${APP_NAME}-${VERSION}.dmg"
 
+# create-dmg returns non-zero on AppleScript cosmetic failures even when DMG is created
+# Use hdiutil as a fallback if create-dmg fails
 create-dmg \
     --volname "$APP_NAME" \
     --volicon "$APP_DIR/Contents/Resources/AppIcon.icns" \
@@ -113,50 +137,61 @@ create-dmg \
     --icon "$APP_NAME.app" 150 190 \
     --app-drop-link 450 185 \
     --hide-extension "$APP_NAME.app" \
+    --skip-jenkins \
     "$DMG_PATH" \
     "$APP_DIR" \
     2>&1 || true
+
+if [ ! -f "$DMG_PATH" ]; then
+    echo -e "${YELLOW}create-dmg failed, falling back to hdiutil...${NC}"
+    STAGING_DIR=$(mktemp -d)
+    cp -R "$APP_DIR" "$STAGING_DIR/"
+    ln -s /Applications "$STAGING_DIR/Applications"
+    hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING_DIR" \
+        -ov -format UDZO "$DMG_PATH"
+    rm -rf "$STAGING_DIR"
+fi
 
 if [ ! -f "$DMG_PATH" ]; then
     echo -e "${RED}Error: DMG creation failed${NC}"
     exit 1
 fi
 
-# 6. Sign the DMG
+# 7. Sign the DMG
 echo -e "${YELLOW}🔏 Signing DMG...${NC}"
 codesign --force --sign "$SIGNING_IDENTITY" "$DMG_PATH"
 
 if [ "$SKIP_NOTARIZE" = false ]; then
-    # 7. Notarize
-    echo -e "${YELLOW}📤 Submitting for notarization (this may take a few minutes)...${NC}"
+    # 8. Notarize the DMG
+    echo -e "${YELLOW}📤 Submitting DMG for notarization...${NC}"
     xcrun notarytool submit "$DMG_PATH" \
         --apple-id "$APPLE_ID" \
         --password "$APPLE_APP_PASSWORD" \
         --team-id "$TEAM_ID" \
         --wait
 
-    # 8. Staple
-    echo -e "${YELLOW}📎 Stapling notarization ticket...${NC}"
+    # 9. Staple the DMG
+    echo -e "${YELLOW}📎 Stapling notarization ticket to DMG...${NC}"
     xcrun stapler staple "$DMG_PATH"
 
     # Verify
-    echo -e "${YELLOW}Verifying notarization...${NC}"
+    echo -e "${YELLOW}Verifying DMG notarization...${NC}"
     xcrun stapler validate "$DMG_PATH"
     spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG_PATH" || true
 else
     echo -e "${YELLOW}Skipping notarization (--skip-notarize)${NC}"
 fi
 
-# 9. Also create pi-talk extension zip
+# 10. Also create pi-talk extension zip
 echo -e "${YELLOW}📦 Packaging pi-talk extension...${NC}"
 zip -j dist/pi-talk-${VERSION}.zip Extensions/pi-talk/index.ts Extensions/pi-talk/package.json Extensions/pi-talk/README.md 2>/dev/null || true
 
-# 10. Calculate SHA for Homebrew
+# 11. Calculate SHA for Homebrew
 echo ""
 SHA=$(shasum -a 256 "$DMG_PATH" | cut -d' ' -f1)
 echo -e "📋 SHA256: ${GREEN}$SHA${NC}"
 
-# 11. Update Homebrew cask
+# 12. Update Homebrew cask
 CASK_FILE=~/work/projects/homebrew-tap/Casks/pitalk.rb
 if [ -f "$CASK_FILE" ]; then
     echo -e "${YELLOW}📝 Updating Homebrew cask...${NC}"

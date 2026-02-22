@@ -5,7 +5,7 @@ set -e
 cd "$(dirname "$0")/.."
 
 # Version - update this for releases
-VERSION="1.0.2"
+VERSION="1.0.3"
 
 echo "🔨 Building PiTalk.app v$VERSION..."
 
@@ -82,13 +82,13 @@ echo -n "APPL????" > "$APP_DIR/Contents/PkgInfo"
 
 echo ""
 echo "✅ Built: $APP_DIR"
-echo "✅ Built: .build/release/ptts (CLI tool)"
+echo "✅ Built: $BINARY_PATH/ptts (CLI tool)"
 echo ""
 echo "To run the app:"
 echo "  open $APP_DIR"
 echo ""
 echo "To install the CLI:"
-echo "  cp .build/release/ptts ~/.local/bin/"
+echo "  cp $BINARY_PATH/ptts ~/.local/bin/"
 echo ""
 
 APP_SIZE=$(du -sh "$APP_DIR" | cut -f1)
