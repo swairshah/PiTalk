@@ -92,9 +92,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         speechCoordinator?.isMuted = !serverEnabled
 
         micMonitor = MicrophoneActivityMonitor { [weak self] isActive in
+            print("PiTalk: Mic callback triggered, isActive=\(isActive)")
             self?.speechCoordinator?.setMicrophoneActive(isActive)
         }
         micMonitor?.start()
+        print("PiTalk: Mic monitor started")
 
         // Only start broker if server is enabled
         if serverEnabled {
@@ -741,17 +743,19 @@ final class SpeechPlaybackCoordinator {
         guard active != isMicrophoneActive else { return }
         isMicrophoneActive = active
         
-        if ProcessInfo.processInfo.environment["PITALK_DEBUG"] == "1" {
-            let hasProcess = currentProcess != nil
-            let isRunning = currentProcess?.isRunning == true
-            print("PiTalk: Coordinator mic state: \(active ? "ACTIVE" : "INACTIVE"), hasProcess=\(hasProcess), isRunning=\(isRunning)")
-        }
+        let hasProcess = currentProcess != nil
+        let isRunning = currentProcess?.isRunning == true
+        print("PiTalk: Coordinator mic state: \(active ? "ACTIVE" : "INACTIVE"), hasProcess=\(hasProcess), isRunning=\(isRunning)")
 
         if active {
             let activelyPlaying = currentProcess?.isRunning == true
 
             // Requirement: if mic starts while voice is already playing, cancel all queued work at that moment.
-            guard activelyPlaying else { return }
+            guard activelyPlaying else { 
+                print("PiTalk: Mic active but no playback running, skipping stop")
+                return 
+            }
+            print("PiTalk: Mic active, stopping playback!")
 
             let pendingIds = allPendingHistoryIdsLocked()
             let activeId = currentJobHistoryId
@@ -1238,9 +1242,10 @@ final class SpeechPlaybackCoordinator {
 
     private func dequeueNextJobLocked() -> (String, SpeechJob)? {
         while !queueOrder.isEmpty {
-            let key = queueOrder.removeFirst()
+            let key = queueOrder.first!
 
             guard var jobs = queuesByKey[key], !jobs.isEmpty else {
+                queueOrder.removeFirst()
                 queuesByKey.removeValue(forKey: key)
                 continue
             }
@@ -1248,10 +1253,12 @@ final class SpeechPlaybackCoordinator {
             let job = jobs.removeFirst()
 
             if jobs.isEmpty {
+                // Queue for this session is empty, remove it and move to next
+                queueOrder.removeFirst()
                 queuesByKey.removeValue(forKey: key)
             } else {
+                // Keep processing this session's queue (don't move to end)
                 queuesByKey[key] = jobs
-                queueOrder.append(key)
             }
 
             return (key, job)

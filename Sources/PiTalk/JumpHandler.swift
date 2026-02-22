@@ -84,6 +84,18 @@ final class JumpHandler {
         
         // Build focus hints
         var hints: [String] = []
+        
+        // For tmux, query the actual session/window info directly
+        var tmuxWindowName: String? = nil
+        if muxInfo?.type == "tmux" && tty != "??" {
+            if let tmuxInfo = getTmuxInfoForTTY(tty) {
+                NSLog("JumpHandler: tmux info for TTY %@: session=%@, window=%@", tty, tmuxInfo.session, tmuxInfo.windowName)
+                hints.append(tmuxInfo.session)
+                hints.append(tmuxInfo.windowName)
+                tmuxWindowName = tmuxInfo.windowName
+            }
+        }
+        
         if let session = muxInfo?.session {
             hints.append(session)
             if session.hasPrefix("agent-") {
@@ -96,6 +108,8 @@ final class JumpHandler {
         if tty != "??" {
             hints.append(tty)
         }
+        
+        NSLog("JumpHandler: focus hints = %@", hints as NSArray)
         
         // Find mux client PID (the tmux/zellij client attached to the session)
         let clientPid = findMuxClientPid(mux: muxInfo, tty: tty, processes: processes)
@@ -319,6 +333,44 @@ final class JumpHandler {
                 return String(parts[1])
             }
         }
+        return nil
+    }
+    
+    /// Query tmux directly to find session/window name for a given TTY
+    private func getTmuxInfoForTTY(_ tty: String) -> (session: String, windowName: String)? {
+        let ttyPath = tty.hasPrefix("/dev/") ? tty : "/dev/\(tty)"
+        
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        task.arguments = ["tmux", "list-panes", "-a", "-F", "#{pane_tty} #{session_name} #{window_name}"]
+        
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = FileHandle.nullDevice
+        
+        do {
+            try task.run()
+        } catch {
+            return nil
+        }
+        
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+        
+        guard let output = String(data: data, encoding: .utf8) else { return nil }
+        
+        for line in output.components(separatedBy: "\n") {
+            let parts = line.split(separator: " ", maxSplits: 2)
+            guard parts.count >= 3 else { continue }
+            
+            let paneTTY = String(parts[0])
+            if paneTTY == ttyPath {
+                let session = String(parts[1])
+                let windowName = String(parts[2])
+                return (session, windowName)
+            }
+        }
+        
         return nil
     }
     
