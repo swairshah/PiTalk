@@ -140,6 +140,10 @@ final class JumpHandler {
         NSLog("JumpHandler: %@", "Step 4 check: focused=\(focused), terminalApp=\(terminalApp ?? "nil"), muxInfo=\(muxInfo != nil)")
         if !focused && (terminalApp == "Ghostty" || muxInfo != nil) {
             var searchHints = hints
+            // Add mux session name first (more specific) then mux type
+            if let muxSession = muxInfo?.session {
+                searchHints.insert(muxSession, at: 0)  // Put session name first for priority matching
+            }
             if let muxType = muxInfo?.type {
                 searchHints.append(muxType)
             }
@@ -289,6 +293,20 @@ final class JumpHandler {
                 return String(parts[1])
             }
         }
+        
+        // Look for session name in --server path (e.g., /tmp/zellij-501/0.43.1/session-name)
+        if let range = args.range(of: "--server\\s+(\\S+)", options: .regularExpression) {
+            let match = args[range]
+            let parts = match.split(separator: " ")
+            if parts.count >= 2 {
+                let serverPath = String(parts[1])
+                // Session name is the last component of the path
+                if let lastComponent = serverPath.split(separator: "/").last {
+                    return String(lastComponent)
+                }
+            }
+        }
+        
         return nil
     }
     
@@ -387,10 +405,10 @@ final class JumpHandler {
     private func focusTerminalByTTY(_ tty: String) -> Bool {
         let t = escapeForAppleScript(tty)
         
-        // Try iTerm2 first (if running)
-        let itermScript = """
-        try
-            if application "iTerm2" is running then
+        // Try iTerm2 first (check if running with native API first to avoid "Where is app?" dialog)
+        if isAppRunning("iTerm2") {
+            let itermScript = """
+            try
                 tell application "iTerm2"
                     repeat with w in windows
                         repeat with tb in tabs of w
@@ -407,18 +425,18 @@ final class JumpHandler {
                         end repeat
                     end repeat
                 end tell
-            end if
-        end try
-        return "no"
-        """
-        if runAppleScript(itermScript) == "ok" {
-            return true
+            end try
+            return "no"
+            """
+            if runAppleScript(itermScript) == "ok" {
+                return true
+            }
         }
         
-        // Try Terminal (if running)
-        let terminalScript = """
-        try
-            if application "Terminal" is running then
+        // Try Terminal (check if running first)
+        if isAppRunning("Terminal") {
+            let terminalScript = """
+            try
                 tell application "Terminal"
                     repeat with w in windows
                         repeat with tb in tabs of w
@@ -432,20 +450,25 @@ final class JumpHandler {
                         end repeat
                     end repeat
                 end tell
-            end if
-        end try
-        return "no"
-        """
-        return runAppleScript(terminalScript) == "ok"
+            end try
+            return "no"
+            """
+            if runAppleScript(terminalScript) == "ok" {
+                return true
+            }
+        }
+        
+        return false
     }
     
     private func focusTerminalByTitleHint(_ hint: String) -> Bool {
         let h = escapeForAppleScript(hint)
         
-        let script = """
-        set needle to "\(h)"
-        try
-            if application "iTerm2" is running then
+        // Try iTerm2 first (check if running with native API to avoid "Where is app?" dialog)
+        if isAppRunning("iTerm2") {
+            let itermScript = """
+            set needle to "\(h)"
+            try
                 tell application "iTerm2"
                     repeat with w in windows
                         repeat with tb in tabs of w
@@ -459,10 +482,19 @@ final class JumpHandler {
                         end repeat
                     end repeat
                 end tell
-            end if
-        end try
-        try
-            if application "Terminal" is running then
+            end try
+            return "no"
+            """
+            if runAppleScript(itermScript) == "ok" {
+                return true
+            }
+        }
+        
+        // Try Terminal (check if running first)
+        if isAppRunning("Terminal") {
+            let terminalScript = """
+            set needle to "\(h)"
+            try
                 tell application "Terminal"
                     repeat with w in windows
                         repeat with tb in tabs of w
@@ -476,11 +508,15 @@ final class JumpHandler {
                         end repeat
                     end repeat
                 end tell
-            end if
-        end try
-        return "no"
-        """
-        return runAppleScript(script) == "ok"
+            end try
+            return "no"
+            """
+            if runAppleScript(terminalScript) == "ok" {
+                return true
+            }
+        }
+        
+        return false
     }
     
     // MARK: - Ghostty CGWindowList-based Tab Switching
@@ -518,19 +554,114 @@ final class JumpHandler {
         return tabs
     }
     
+    // MARK: - Accessibility API Tab Switching
+    
+    private func focusGhosttyTabViaAccessibility(searchTerms: [String]) -> (Bool, String?) {
+        guard let ghosttyApp = NSWorkspace.shared.runningApplications.first(where: { 
+            $0.bundleIdentifier == "com.mitchellh.ghostty" 
+        }) else {
+            return (false, "Ghostty not running")
+        }
+        
+        let pid = ghosttyApp.processIdentifier
+        let appRef = AXUIElementCreateApplication(pid)
+        
+        // Get main window
+        var mainWindowRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appRef, kAXMainWindowAttribute as CFString, &mainWindowRef) == .success,
+              let mainWindow = mainWindowRef else {
+            return (false, "Could not get main window")
+        }
+        
+        // Find the tab group
+        var childrenRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(mainWindow as! AXUIElement, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+              let children = childrenRef as? [AXUIElement] else {
+            return (false, "Could not get window children")
+        }
+        
+        // Look for AXTabGroup
+        var tabGroup: AXUIElement?
+        for child in children {
+            var roleRef: CFTypeRef?
+            AXUIElementCopyAttributeValue(child, kAXRoleAttribute as CFString, &roleRef)
+            if (roleRef as? String) == "AXTabGroup" {
+                tabGroup = child
+                break
+            }
+        }
+        
+        guard let tabGroup = tabGroup else {
+            return (false, "No tab group found")
+        }
+        
+        // Get tabs (AXRadioButton children)
+        var tabsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(tabGroup, kAXChildrenAttribute as CFString, &tabsRef) == .success,
+              let tabs = tabsRef as? [AXUIElement] else {
+            return (false, "Could not get tabs")
+        }
+        
+        // Build list of tab titles for matching
+        let tabsWithTitles: [(tab: AXUIElement, title: String)] = tabs.compactMap { tab in
+            var titleRef: CFTypeRef?
+            AXUIElementCopyAttributeValue(tab, kAXTitleAttribute as CFString, &titleRef)
+            guard let title = titleRef as? String else { return nil }
+            return (tab, title)
+        }
+        
+        // Find matching tab - iterate search terms first (priority order), then tabs
+        // This ensures more specific terms (like zellij session name) match before generic ones
+        for term in searchTerms {
+            let termLower = term.lowercased()
+            for (tab, title) in tabsWithTitles {
+                if title.lowercased().contains(termLower) {
+                    // Found it! Click this tab
+                    let result = AXUIElementPerformAction(tab, kAXPressAction as CFString)
+                    if result == .success {
+                        return (true, "Selected tab '\(title)' via Accessibility API (matched '\(term)')")
+                    } else {
+                        return (false, "Failed to click tab: \(result.rawValue)")
+                    }
+                }
+            }
+        }
+        
+        let tabTitles = tabsWithTitles.map { $0.title }
+        return (false, "No matching tab found, available: \(tabTitles)")
+    }
+    
     private func focusGhosttyViaCGWindowList(hints: [String], cwd: String?) -> (Bool, String?) {
         NSLog("JumpHandler: %@", "focusGhosttyViaCGWindowList starting...")
-        let tabs = getGhosttyTabsViaCGWindowList()
-        NSLog("JumpHandler: %@", "found \(tabs.count) Ghostty tabs")
-        
-        guard !tabs.isEmpty else {
-            return (false, "no Ghostty tabs found")
-        }
         
         // Build search terms from hints and cwd
         var searchTerms = hints.map { $0.lowercased() }
         if let cwd = cwd {
             searchTerms.append(URL(fileURLWithPath: cwd).lastPathComponent.lowercased())
+        }
+        
+        // First, activate Ghostty
+        if let ghosttyApp = NSWorkspace.shared.runningApplications.first(where: { 
+            $0.bundleIdentifier == "com.mitchellh.ghostty" 
+        }) {
+            ghosttyApp.activate()
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        
+        // Try Accessibility API first (faster, more reliable)
+        let (axSuccess, axMsg) = focusGhosttyTabViaAccessibility(searchTerms: searchTerms)
+        if axSuccess {
+            NSLog("JumpHandler: %@", "Accessibility API success: \(axMsg ?? "")")
+            return (true, axMsg)
+        }
+        NSLog("JumpHandler: %@", "Accessibility API failed: \(axMsg ?? ""), falling back to keystrokes")
+        
+        // Fallback to CGWindowList + keystrokes
+        let tabs = getGhosttyTabsViaCGWindowList()
+        NSLog("JumpHandler: %@", "found \(tabs.count) Ghostty tabs")
+        
+        guard !tabs.isEmpty else {
+            return (false, "no Ghostty tabs found")
         }
         
         // Find matching tab by hints
