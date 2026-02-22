@@ -57,9 +57,44 @@ struct StatusBarContentView: View {
                 
                 Spacer()
                 
-                Text(monitor.serverOnline ? "API: ready" : "API: no key")
-                    .font(.caption)
-                    .foregroundStyle(monitor.serverOnline ? .green : .red)
+                // Speed slider + Mute toggle
+                HStack(spacing: 6) {
+                    // Speed slider
+                    HStack(spacing: 2) {
+                        Image(systemName: "hare")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                        Slider(value: $monitor.speechSpeed, in: 0.7...1.2, step: 0.05)
+                            .frame(width: 50)
+                            .controlSize(.mini)
+                        Text(String(format: "%.1fx", monitor.speechSpeed))
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 28)
+                    }
+                    .help("Speech speed: \(String(format: "%.2f", monitor.speechSpeed))x (0.7-1.2)")
+                    
+                    Divider()
+                        .frame(height: 12)
+                    
+                    // Server on/off toggle
+                    HStack(spacing: 3) {
+                        Image(systemName: monitor.serverEnabled ? "speaker.wave.2" : "speaker.slash")
+                            .font(.system(size: 10))
+                            .foregroundStyle(monitor.serverEnabled ? .primary : .secondary)
+                        Toggle("", isOn: Binding(
+                            get: { monitor.serverEnabled },
+                            set: { newValue in
+                                monitor.serverEnabled = newValue
+                                monitor.handleServerToggle(enabled: newValue)
+                            }
+                        ))
+                            .toggleStyle(.switch)
+                            .controlSize(.mini)
+                            .labelsHidden()
+                    }
+                    .help(monitor.serverEnabled ? "Voice server is running" : "Voice server is stopped")
+                }
             }
             
             // Status pills
@@ -255,14 +290,15 @@ struct StatusBarContentView: View {
 struct StatusBarIcon: View {
     let summary: VoiceSummary
     let serverOnline: Bool
+    let serverEnabled: Bool
     
     var body: some View {
         Image(nsImage: menuBarImage)
-            .help(serverOnline ? summary.label : "API key not configured")
+            .help(!serverEnabled ? "Voice server is stopped" : (serverOnline ? summary.label : "API key not configured"))
     }
     
     private var statusColor: NSColor {
-        guard serverOnline else { return .labelColor }
+        guard serverOnline && serverEnabled else { return .labelColor }
         
         // Green when any session is waiting for input, otherwise default (white/black based on appearance)
         if summary.color == "green" {
@@ -272,8 +308,8 @@ struct StatusBarIcon: View {
     }
     
     private var menuBarImage: NSImage {
-        // Load PNG from Resources folder
-        let imageName = serverOnline ? "menubar_on" : "menubar_off"
+        // Use "off" icon when server disabled or no API key
+        let imageName = (serverOnline && serverEnabled) ? "menubar_on" : "menubar_off"
         
         guard let url = Bundle.module.url(forResource: imageName, withExtension: "png", subdirectory: "Resources"),
               let originalImage = NSImage(contentsOf: url) else {

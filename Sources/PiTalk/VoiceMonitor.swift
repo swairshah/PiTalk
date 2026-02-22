@@ -100,6 +100,46 @@ final class VoiceMonitor: ObservableObject {
     var queuedCount: Int { sessions.filter { $0.activity == .queued }.count }
     var totalQueuedItems: Int { recentHistory.filter { $0.status == .queued }.count }
     
+    // Server on/off toggle - stops/starts the broker server entirely
+    @Published var serverEnabled: Bool = !UserDefaults.standard.bool(forKey: "serverDisabled")
+    
+    func handleServerToggle(enabled: Bool) {
+        print("PiTalk: handleServerToggle called with enabled=\(enabled)")
+        UserDefaults.standard.set(!enabled, forKey: "serverDisabled")
+        
+        guard let appDelegate = AppDelegate.shared else {
+            print("PiTalk: ERROR - AppDelegate.shared not set!")
+            return
+        }
+        
+        if enabled {
+            // Start the broker server (with small delay to allow port to be released)
+            print("PiTalk: Starting broker...")
+            appDelegate.speechCoordinator?.isMuted = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                appDelegate.startLocalBroker()
+            }
+        } else {
+            // Stop playback and shut down the broker server
+            print("PiTalk: Stopping broker and playback...")
+            appDelegate.speechCoordinator?.stopAll()
+            appDelegate.speechCoordinator?.isMuted = true
+            appDelegate.stopLocalBroker()
+        }
+    }
+    
+    // Speech speed (0.7 to 1.2, default 1.0) - ElevenLabs streaming API limit
+    @Published var speechSpeed: Double = min(1.2, max(0.7, UserDefaults.standard.object(forKey: "speechSpeed") as? Double ?? 1.0)) {
+        didSet {
+            let clamped = min(1.2, max(0.7, speechSpeed))
+            if clamped != speechSpeed {
+                speechSpeed = clamped
+            } else {
+                UserDefaults.standard.set(speechSpeed, forKey: "speechSpeed")
+            }
+        }
+    }
+    
     init() {
         // Start monitoring immediately so the menubar icon shows correct state on launch
         start()

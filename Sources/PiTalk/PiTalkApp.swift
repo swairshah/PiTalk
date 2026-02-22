@@ -24,7 +24,7 @@ struct PiTalkApp: App {
         MenuBarExtra {
             StatusBarContentView(monitor: monitor)
         } label: {
-            StatusBarIcon(summary: monitor.summary, serverOnline: monitor.serverOnline)
+            StatusBarIcon(summary: monitor.summary, serverOnline: monitor.serverOnline, serverEnabled: monitor.serverEnabled)
         }
         .menuBarExtraStyle(.window)
         
@@ -36,6 +36,9 @@ struct PiTalkApp: App {
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
+    // Shared instance for access from SwiftUI views
+    static var shared: AppDelegate?
+    
     // Menu bar UI is handled by SwiftUI MenuBarExtra
     // TTS is handled by ElevenLabs API (no local server needed)
     var settingsWindow: NSWindow?
@@ -64,7 +67,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.string(forKey: "ttsVoice") ?? "ally"
     }
     
+    // Server enabled state - persisted (inverted storage as "serverDisabled")
+    var serverEnabled: Bool {
+        get { !UserDefaults.standard.bool(forKey: "serverDisabled") }
+        set {
+            UserDefaults.standard.set(!newValue, forKey: "serverDisabled")
+            speechCoordinator?.isMuted = !newValue
+        }
+    }
+    
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Set shared instance for access from SwiftUI
+        AppDelegate.shared = self
+        
         // Menu bar is now handled by SwiftUI MenuBarExtra
         setupGlobalShortcut()
         updateDockIconVisibility()
@@ -72,13 +87,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         speechCoordinator = SpeechPlaybackCoordinator(
             defaultVoiceProvider: { [weak self] in self?.selectedVoice ?? "ally" }
         )
+        
+        // Restore server enabled state from preferences
+        speechCoordinator?.isMuted = !serverEnabled
 
         micMonitor = MicrophoneActivityMonitor { [weak self] isActive in
             self?.speechCoordinator?.setMicrophoneActive(isActive)
         }
         micMonitor?.start()
 
-        startLocalBroker()
+        // Only start broker if server is enabled
+        if serverEnabled {
+            startLocalBroker()
+        } else {
+            print("PiTalk: Server disabled, broker not started")
+        }
     }
     
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -136,7 +159,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var healthServer: HealthHTTPServer?
     
     func startLocalBroker() {
-        guard let coordinator = speechCoordinator else { return }
+        print("PiTalk: startLocalBroker called, coordinator=\(speechCoordinator != nil), localBroker=\(localBroker != nil)")
+        guard let coordinator = speechCoordinator else {
+            print("PiTalk: No coordinator, cannot start broker")
+            return
+        }
+        
+        // Don't start if already running
+        if localBroker != nil {
+            print("PiTalk: Broker already running, skipping start")
+            return
+        }
+        
         do {
             let broker = try LocalSpeechBroker(port: brokerPort, coordinator: coordinator)
             broker.start()
@@ -144,13 +178,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             print("PiTalk: Local broker listening on 127.0.0.1:\(brokerPort)")
             
             // Also start HTTP health server on 18080 (pi-tts extension expects this)
-            let server = HealthHTTPServer(port: 18080)
-            server.start()
-            healthServer = server
-            print("PiTalk: Health server listening on 127.0.0.1:18080")
+            if healthServer == nil {
+                let server = HealthHTTPServer(port: 18080)
+                server.start()
+                healthServer = server
+                print("PiTalk: Health server listening on 127.0.0.1:18080")
+            }
         } catch {
             print("PiTalk: Failed to start local broker: \(error)")
         }
+    }
+    
+    func stopLocalBroker() {
+        print("PiTalk: stopLocalBroker called, localBroker=\(localBroker != nil)")
+        localBroker?.stop()
+        localBroker = nil
+        healthServer?.stop()
+        healthServer = nil
+        print("PiTalk: Broker and health server stopped")
     }
     
     @objc func stopCurrentSpeech() {
@@ -419,12 +464,12 @@ final class RequestHistoryStore: ObservableObject {
             let data = try Data(contentsOf: historyFileURL)
             let decoded = try JSONDecoder().decode([RequestHistoryEntry].self, from: data)
             
-            // Clean up stale "playing" entries (from crashes or bugs)
+            // Clean up stale "playing" and "queued" entries (from crashes or bugs)
             let staleCutoff = Date().addingTimeInterval(-120)  // 2 minutes
             let cleaned = decoded.prefix(maxEntries).map { entry -> RequestHistoryEntry in
-                if entry.status == .playing && entry.timestamp < staleCutoff {
+                if (entry.status == .playing || entry.status == .queued) && entry.timestamp < staleCutoff {
                     var fixed = entry
-                    fixed.status = .interrupted
+                    fixed.status = entry.status == .playing ? .interrupted : .cancelled
                     return fixed
                 }
                 return entry
@@ -553,6 +598,10 @@ final class MicrophoneActivityMonitor {
     private func setActive(_ active: Bool) {
         guard active != isActive else { return }
         isActive = active
+        
+        if ProcessInfo.processInfo.environment["PITALK_DEBUG"] == "1" {
+            print("PiTalk: Microphone activity changed: \(active ? "ACTIVE" : "INACTIVE")")
+        }
 
         DispatchQueue.main.async {
             self.onActivityChanged(active)
@@ -575,6 +624,22 @@ final class SpeechPlaybackCoordinator {
     private var currentRunNonce: UUID?
 
     private var isMicrophoneActive = false
+    
+    // Mute toggle - when true, requests are tracked but not spoken
+    private var _isMuted = false
+    var isMuted: Bool {
+        get { queue.sync { _isMuted } }
+        set {
+            queue.async {
+                let wasMuted = self._isMuted
+                self._isMuted = newValue
+                // If unmuting, resume queue processing
+                if wasMuted && !newValue {
+                    self.startNextIfNeededLocked()
+                }
+            }
+        }
+    }
 
     // Auto voice assignment for queues that don't specify voice.
     // Using ElevenLabs voices
@@ -638,9 +703,12 @@ final class SpeechPlaybackCoordinator {
     }
 
     func stopAll() {
+        print("PiTalk: stopAll() called")
         let state = queue.sync { () -> (pending: [UUID], active: UUID?) in
             let pendingIds = allPendingHistoryIdsLocked()
             let activeId = currentJobHistoryId
+            
+            print("PiTalk: stopAll - pending=\(pendingIds.count), hasActive=\(activeId != nil), currentProcess=\(currentProcess != nil)")
 
             queuesByKey.removeAll()
             queueOrder.removeAll()
@@ -672,6 +740,12 @@ final class SpeechPlaybackCoordinator {
     private func handleMicrophoneStateChangeLocked(_ active: Bool) {
         guard active != isMicrophoneActive else { return }
         isMicrophoneActive = active
+        
+        if ProcessInfo.processInfo.environment["PITALK_DEBUG"] == "1" {
+            let hasProcess = currentProcess != nil
+            let isRunning = currentProcess?.isRunning == true
+            print("PiTalk: Coordinator mic state: \(active ? "ACTIVE" : "INACTIVE"), hasProcess=\(hasProcess), isRunning=\(isRunning)")
+        }
 
         if active {
             let activelyPlaying = currentProcess?.isRunning == true
@@ -704,7 +778,7 @@ final class SpeechPlaybackCoordinator {
     }
 
     private func startNextIfNeededLocked() {
-        guard !isPlaying, !isMicrophoneActive else { return }
+        guard !isPlaying, !isMicrophoneActive, !_isMuted else { return }
         guard let (queueKey, job) = dequeueNextJobLocked() else { return }
 
         isPlaying = true
@@ -727,6 +801,17 @@ final class SpeechPlaybackCoordinator {
 
     private func process(job: SpeechJob, runNonce: UUID) async {
         var finalStatus: RequestPlaybackStatus = .played
+
+        // If muted, skip playback but mark as played
+        if isMuted {
+            RequestHistoryStore.shared.updateStatus(
+                id: job.historyEntryId,
+                to: .played,
+                unlessCurrentIn: [.cancelled, .interrupted]
+            )
+            finishCurrent(runNonce: runNonce)
+            return
+        }
 
         do {
             guard await waitUntilMicrophoneInactive(runNonce: runNonce) else {
@@ -891,13 +976,28 @@ final class SpeechPlaybackCoordinator {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
 
+        // Get speech speed from settings (default 1.0)
+        let rawSpeed = UserDefaults.standard.object(forKey: "speechSpeed") as? Double ?? 1.0
+        // Round to 2 decimal places to avoid floating point precision issues in JSON
+        let speed = (rawSpeed * 100).rounded() / 100
+        
+        if ProcessInfo.processInfo.environment["PITALK_DEBUG"] == "1" {
+            print("PiTalk: Synthesizing with speed=\(speed), voice=\(job.voice), text=\(job.text.prefix(50))...")
+        }
+        
+        var voiceSettings: [String: Any] = [
+            "stability": 0.5,
+            "similarity_boost": 0.75
+        ]
+        // Only add speed if not default (some models may not support it)
+        if abs(speed - 1.0) > 0.01 {
+            voiceSettings["speed"] = speed
+        }
+        
         let body: [String: Any] = [
             "text": job.text,
             "model_id": "eleven_flash_v2_5",  // Fastest model (~75ms latency)
-            "voice_settings": [
-                "stability": 0.5,
-                "similarity_boost": 0.75
-            ]
+            "voice_settings": voiceSettings
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         
@@ -1070,13 +1170,19 @@ final class SpeechPlaybackCoordinator {
     }
 
     private func terminateCurrentProcessLocked() {
-        guard let process = currentProcess else { return }
+        guard let process = currentProcess else {
+            print("PiTalk: terminateCurrentProcessLocked - no current process")
+            return
+        }
 
+        print("PiTalk: terminateCurrentProcessLocked - process PID=\(process.processIdentifier), isRunning=\(process.isRunning)")
         if process.isRunning {
             process.terminate()
+            let pid = process.processIdentifier
             DispatchQueue.global().asyncAfter(deadline: .now() + 0.25) {
                 if process.isRunning {
-                    kill(process.processIdentifier, SIGKILL)
+                    print("PiTalk: Force killing process PID=\(pid)")
+                    kill(pid, SIGKILL)
                 }
             }
         }
@@ -1176,7 +1282,9 @@ final class LocalSpeechBroker {
             throw NSError(domain: "PiTalk", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid broker port: \(port)"])
         }
 
-        self.listener = try NWListener(using: .tcp, on: nwPort)
+        let params = NWParameters.tcp
+        params.allowLocalEndpointReuse = true
+        self.listener = try NWListener(using: params, on: nwPort)
         self.coordinator = coordinator
     }
 
@@ -1200,6 +1308,8 @@ final class LocalSpeechBroker {
     }
 
     func stop() {
+        print("PiTalk: LocalSpeechBroker.stop() - cancelling listener")
+        listener.newConnectionHandler = nil
         listener.cancel()
     }
 
