@@ -1,119 +1,146 @@
 # Releasing PiTalk
 
-## 1. Bump version
-
-Update `scripts/build-app.sh`:
-- `VERSION="1.0.0"` at the top — user-facing version
-- `CFBundleVersion` in the Info.plist section — increment build number
-
-## 2. Build (Universal Binary)
+## Quick Release (one command)
 
 ```bash
-# Build universal binary and create app bundle
-./scripts/build-app.sh --universal
-
-# Verify universal binary
-file .build/PiTalk.app/Contents/MacOS/PiTalk
-# Should show: Mach-O universal binary with 2 architectures: [x86_64] [arm64]
+./scripts/release.sh <version>
 ```
 
-## 3. Sign
+Example:
 
 ```bash
-codesign --force --deep --options runtime --timestamp \
-  --entitlements Sources/PiTalk/PiTalk.entitlements \
-  --sign "Developer ID Application" \
-  .build/PiTalk.app
+./scripts/release.sh 1.0.5
 ```
 
-## 4. Create DMG & Notarize
+This single command handles everything:
+
+1. Updates version in `scripts/build-app.sh`
+2. Builds **universal binary** (arm64 + x86_64) — works on both Apple Silicon and Intel Macs
+3. Copies the **SPM resource bundle** (`PiTalk_PiTalk.bundle`) into the app
+4. Code signs the app with Developer ID
+5. **Notarizes the app** (via ZIP upload) and staples the ticket
+6. Creates a DMG with Applications symlink
+7. **Notarizes the DMG** and staples the ticket
+8. Packages the pi-talk extension ZIP
+9. Calculates SHA256 and updates the **Homebrew cask**
+
+### After the script finishes
+
+Commit, tag, create GitHub release, and push the Homebrew tap:
 
 ```bash
-VERSION="1.0.0"  # Match version from step 1
-
-mkdir -p dist
-hdiutil create -volname "PiTalk" -srcfolder .build/PiTalk.app -ov -format UDZO dist/PiTalk-$VERSION.dmg
-
-xcrun notarytool submit dist/PiTalk-$VERSION.dmg \
-  --keychain-profile "notarytool" \
-  --wait
-```
-
-If it fails, check the log:
-```bash
-xcrun notarytool log SUBMISSION_ID --keychain-profile "notarytool"
-```
-
-## 5. Staple
-
-```bash
-xcrun stapler staple dist/PiTalk-$VERSION.dmg
-```
-
-## 6. Commit & Tag
-
-```bash
+# Commit and tag
 git add scripts/build-app.sh
-git commit -m "Bump version to $VERSION"
-git tag -a v$VERSION -m "Release v$VERSION"
+git commit -m "v1.0.5: <description>"
 git push origin main
-git push origin v$VERSION
-```
+git tag -a v1.0.5 -m "Release v1.0.5"
+git push origin v1.0.5
 
-## 7. GitHub release
+# GitHub release
+gh release create v1.0.5 \
+  dist/PiTalk-1.0.5.dmg \
+  dist/pi-talk-1.0.5.zip \
+  --title "PiTalk v1.0.5" \
+  --generate-notes
 
-```bash
-gh release create v$VERSION dist/PiTalk-$VERSION.dmg \
-  --title "PiTalk v$VERSION" \
-  --notes "Release notes here"
-```
-
-## 8. Update Homebrew tap
-
-```bash
-# Get SHA
-shasum -a 256 dist/PiTalk-$VERSION.dmg
-
-# Create/update ~/work/projects/homebrew-tap/Casks/pitalk.rb
-```
-
-Example cask file:
-```ruby
-cask "pitalk" do
-  version "1.0.0"
-  sha256 "YOUR_SHA256_HERE"
-
-  url "https://github.com/swairshah/pi-talk-app/releases/download/v#{version}/PiTalk-#{version}.dmg"
-  name "PiTalk"
-  desc "Voice interface for pi coding agent"
-  homepage "https://github.com/swairshah/pi-talk-app"
-
-  depends_on macos: ">= :ventura"
-
-  app "PiTalk.app"
-
-  zap trash: [
-    "~/Library/Application Support/PiTalk",
-    "~/Library/Preferences/com.pitalk.app.plist",
-  ]
-
-  caveats <<~EOS
-    PiTalk requires Microphone and Accessibility permissions.
-    
-    On first launch, grant accessibility access when prompted.
-  EOS
-end
-```
-
-Then push the tap:
-```bash
+# Homebrew tap
 cd ~/work/projects/homebrew-tap
 git add Casks/pitalk.rb
-git commit -m "Add/update pitalk to $VERSION"
+git commit -m "Update pitalk to 1.0.5"
 git push
 ```
 
-## 9. Users can install with:
+## Prerequisites
+
+- **Developer ID Application certificate** in Keychain (`Developer ID Application: Swair Rajesh Shah (8B9YURJS4G)`)
+- **App-specific password** in `~/.env` as `APPLE_APP_PASSWORD`
+- **create-dmg**: `brew install create-dmg`
+- **gh** (GitHub CLI): `brew install gh`
+
+## Skip Notarization (for testing)
+
+```bash
+./scripts/release.sh 1.0.5 --skip-notarize
+```
+
+## Debugging Failed Notarization
+
+```bash
+# Check submission log
+xcrun notarytool log <SUBMISSION_ID> \
+  --apple-id swairshah@gmail.com \
+  --password "$APPLE_APP_PASSWORD" \
+  --team-id 8B9YURJS4G
+```
+
+## Verifying a Build
+
+```bash
+# Check it's universal
+file .build/PiTalk.app/Contents/MacOS/PiTalk
+# → Mach-O universal binary with 2 architectures: [x86_64] [arm64]
+
+# Check resource bundle is included
+ls .build/PiTalk.app/Contents/Resources/PiTalk_PiTalk.bundle
+# → Must exist, otherwise app crashes on launch
+
+# Check signing
+codesign --verify --verbose=2 .build/PiTalk.app
+
+# Check notarization
+spctl --assess --verbose=2 .build/PiTalk.app
+# → should say "accepted" and "source=Notarized Developer ID"
+```
+
+## Debugging Launch Failures on Other Machines
+
+If the app won't open on another Mac:
+
+```bash
+# Check Console.app — filter by "PiTalk"
+
+# Check crash reports
+ls ~/Library/Logs/DiagnosticReports/PiTalk*
+
+# Check system log
+log show --predicate 'process == "PiTalk"' --last 5m
+
+# Check quarantine (if downloaded from internet)
+xattr -l /Applications/PiTalk.app
+xattr -cr /Applications/PiTalk.app  # clear quarantine
+
+# Check notarization
+spctl --assess --verbose=2 /Applications/PiTalk.app
+codesign --verify --deep --verbose=2 /Applications/PiTalk.app
+```
+
+## Architecture Notes
+
+### Why we build universal
+
+The `--universal` flag passes `--arch arm64 --arch x86_64` to `swift build`, producing a fat binary that runs natively on both Apple Silicon and Intel Macs.
+
+### Why we notarize the app AND the DMG
+
+Previous versions only notarized the DMG. This caused Gatekeeper to block the app on other machines because the app binary itself wasn't notarized. Following the pattern from [Hearsay](../hearsay), we now:
+
+1. Notarize the app (via ZIP) → staple the `.app`
+2. Create the DMG from the stapled app
+3. Notarize the DMG → staple the `.dmg`
+
+### Why we copy PiTalk_PiTalk.bundle
+
+PiTalk uses Swift Package Manager, which builds the executable and resource bundle as **separate outputs**. Unlike Xcode (`xcodebuild`), SPM does not create an `.app` bundle — `build-app.sh` assembles it manually.
+
+The generated `resource_bundle_accessor.swift` looks for `PiTalk_PiTalk.bundle` in:
+1. `Bundle.main.resourceURL` (inside the `.app` → `Contents/Resources/`)
+2. A hardcoded absolute path to the local `.build/` directory (fallback)
+
+The fallback path masks the bug on the build machine — the app works fine locally even without the bundle in the `.app`. On any other machine, that path doesn't exist and the app crashes with `fatalError("unable to find bundle named PiTalk_PiTalk")`.
+
+**This is why the bundle must be explicitly copied into the app.**
+
+## Users Install With
 
 ```bash
 brew tap swairshah/tap
