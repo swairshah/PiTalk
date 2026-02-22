@@ -96,6 +96,13 @@ final class JumpHandler {
         // Find the target process
         guard let targetProcess = byPid[pid] else {
             NSLog("JumpHandler: %@", "process not found: \(pid)")
+            
+            // Fallback for short-lived worker processes (eg. FloatingChat subprocesses):
+            // use telemetry metadata to focus the owning app instead of failing hard.
+            if let fallbackResult = focusOwningAppFromTelemetry(forMissingPid: pid) {
+                return fallbackResult
+            }
+            
             return JumpResult(ok: false, focused: false, focusedApp: nil, openedShell: false,
                             message: "Process not found: \(pid)")
         }
@@ -235,15 +242,22 @@ final class JumpHandler {
             selectZellijTabForSession(session: zellijSession, cwd: cwd, tty: tty)
         }
         
-        // Note: We do NOT open new terminal windows as a fallback
-        // If we can't focus, we just report failure
+        // Step 6: Non-terminal fallback (eg. app-hosted pi via RPC/subprocess)
+        // IMPORTANT: Do NOT use this for terminal/mux sessions, or we'll report false positives.
+        let looksLikeTerminalSession = (tty != "??") || (muxInfo != nil) || (terminalApp != nil)
+        if !focused && !looksLikeTerminalSession {
+            if let appName = focusOwningAppForLivePid(Int32(pid), byPid: byPid, cwdHint: cwd) {
+                focused = true
+                focusedApp = appName
+            }
+        }
         
         return JumpResult(
             ok: true,
             focused: focused,
             focusedApp: focusedApp,
             openedShell: false,
-            message: focused ? "Focused \(focusedApp ?? "terminal")" : "Could not focus terminal"
+            message: focused ? "Focused \(focusedApp ?? "app")" : "Could not focus terminal or app"
         )
     }
     
@@ -669,112 +683,128 @@ final class JumpHandler {
     // MARK: - Accessibility API Tab Switching
     
     private func focusGhosttyTabViaAccessibility(searchTerms: [String], isTmux: Bool = false) -> (Bool, String?) {
-        guard let ghosttyApp = NSWorkspace.shared.runningApplications.first(where: { 
-            $0.bundleIdentifier == "com.mitchellh.ghostty" 
+        guard let ghosttyApp = NSWorkspace.shared.runningApplications.first(where: {
+            $0.bundleIdentifier == "com.mitchellh.ghostty"
         }) else {
             return (false, "Ghostty not running")
         }
         
-        let pid = ghosttyApp.processIdentifier
-        let appRef = AXUIElementCreateApplication(pid)
+        let appRef = AXUIElementCreateApplication(ghosttyApp.processIdentifier)
         
-        // Get main window
-        var mainWindowRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(appRef, kAXMainWindowAttribute as CFString, &mainWindowRef) == .success,
-              let mainWindow = mainWindowRef else {
-            return (false, "Could not get main window")
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appRef, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let windows = windowsRef as? [AXUIElement],
+              !windows.isEmpty else {
+            return (false, "Could not get Ghostty windows")
         }
         
-        // Find the tab group
-        var childrenRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(mainWindow as! AXUIElement, kAXChildrenAttribute as CFString, &childrenRef) == .success,
-              let children = childrenRef as? [AXUIElement] else {
-            return (false, "Could not get window children")
-        }
+        let onScreenWindowTitles = Set(getGhosttyTabsViaCGWindowList().filter { $0.isOnScreen }.map { $0.name })
         
-        // Look for AXTabGroup
-        var tabGroup: AXUIElement?
-        for child in children {
-            var roleRef: CFTypeRef?
-            AXUIElementCopyAttributeValue(child, kAXRoleAttribute as CFString, &roleRef)
-            if (roleRef as? String) == "AXTabGroup" {
-                tabGroup = child
-                break
-            }
-        }
-        
-        guard let tabGroup = tabGroup else {
-            return (false, "No tab group found")
-        }
-        
-        // Get tabs (AXRadioButton children)
-        var tabsRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(tabGroup, kAXChildrenAttribute as CFString, &tabsRef) == .success,
-              let tabs = tabsRef as? [AXUIElement] else {
-            return (false, "Could not get tabs")
-        }
-        
-        // Build list of tab titles for matching
-        let tabsWithTitles: [(tab: AXUIElement, title: String)] = tabs.compactMap { tab in
+        func windowTitle(_ window: AXUIElement) -> String {
             var titleRef: CFTypeRef?
-            AXUIElementCopyAttributeValue(tab, kAXTitleAttribute as CFString, &titleRef)
-            guard let title = titleRef as? String else { return nil }
-            return (tab, title)
+            if AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef) == .success,
+               let title = titleRef as? String {
+                return title
+            }
+            return ""
         }
         
-        // Find matching tab - iterate search terms first (priority order), then tabs
-        // This ensures more specific terms (like zellij session name) match before generic ones
-        for term in searchTerms {
-            let termLower = term.lowercased()
+        func tabsForWindow(_ window: AXUIElement) -> [(tab: AXUIElement, title: String)] {
+            var childrenRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(window, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+                  let children = childrenRef as? [AXUIElement] else {
+                return []
+            }
             
-            // First pass: prefer tabs with "π -" prefix (actual pi sessions)
-            for (tab, title) in tabsWithTitles {
-                if title.lowercased().contains(termLower) && title.hasPrefix("π -") {
-                    let result = AXUIElementPerformAction(tab, kAXPressAction as CFString)
-                    if result == .success {
-                        return (true, "Selected tab '\(title)' via Accessibility API (matched '\(term)')")
-                    } else {
-                        return (false, "Failed to click tab: \(result.rawValue)")
-                    }
+            var tabGroup: AXUIElement?
+            for child in children {
+                var roleRef: CFTypeRef?
+                AXUIElementCopyAttributeValue(child, kAXRoleAttribute as CFString, &roleRef)
+                if (roleRef as? String) == "AXTabGroup" {
+                    tabGroup = child
+                    break
                 }
             }
             
-            // Second pass: any matching tab
-            for (tab, title) in tabsWithTitles {
-                if title.lowercased().contains(termLower) {
-                    let result = AXUIElementPerformAction(tab, kAXPressAction as CFString)
-                    if result == .success {
-                        return (true, "Selected tab '\(title)' via Accessibility API (matched '\(term)')")
-                    } else {
-                        return (false, "Failed to click tab: \(result.rawValue)")
-                    }
-                }
+            guard let tabGroup else { return [] }
+            
+            var tabsRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(tabGroup, kAXChildrenAttribute as CFString, &tabsRef) == .success,
+                  let tabs = tabsRef as? [AXUIElement] else {
+                return []
+            }
+            
+            return tabs.compactMap { tab in
+                var titleRef: CFTypeRef?
+                AXUIElementCopyAttributeValue(tab, kAXTitleAttribute as CFString, &titleRef)
+                guard let title = titleRef as? String else { return nil }
+                return (tab, title)
             }
         }
         
-        // Fallback for tmux: try "generic" tabs (not pi sessions, not paths, not zellij)
-        // This handles cases where the tmux tab was manually renamed
-        if isTmux {
-            NSLog("JumpHandler: tmux fallback - looking for generic tabs")
-            for (tab, title) in tabsWithTitles {
-                let isPiSession = title.hasPrefix("π -")
-                let isZellij = title.contains("|")
-                let isPath = title.hasPrefix("…/") || title.hasPrefix("/")
-                let isEmpty = title.isEmpty
-                let isGeneric = !isPiSession && !isZellij && !isPath && !isEmpty
+        let orderedWindows = windows.sorted { lhs, rhs in
+            let lTitle = windowTitle(lhs)
+            let rTitle = windowTitle(rhs)
+            let lOn = onScreenWindowTitles.contains(lTitle)
+            let rOn = onScreenWindowTitles.contains(rTitle)
+            if lOn != rOn { return lOn && !rOn }
+            return false
+        }
+        
+        var allTabTitles: [String] = []
+        
+        for window in orderedWindows {
+            let winTitle = windowTitle(window)
+            let tabsWithTitles = tabsForWindow(window)
+            allTabTitles.append(contentsOf: tabsWithTitles.map { $0.title })
+            guard !tabsWithTitles.isEmpty else { continue }
+            
+            for term in searchTerms {
+                let termLower = term.lowercased()
                 
-                if isGeneric {
-                    NSLog("JumpHandler: trying generic tab '\(title)'")
+                for (tab, title) in tabsWithTitles where title.lowercased().contains(termLower) && title.hasPrefix("π -") {
+                    _ = AXUIElementSetAttributeValue(appRef, kAXMainWindowAttribute as CFString, window)
+                    _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
                     let result = AXUIElementPerformAction(tab, kAXPressAction as CFString)
                     if result == .success {
-                        return (true, "Selected generic tab '\(title)' via tmux fallback")
+                        return (true, "Selected tab '\(title)' in window '\(winTitle)' via Accessibility API (matched '\(term)')")
+                    }
+                    return (false, "Failed to click tab: \(result.rawValue)")
+                }
+                
+                for (tab, title) in tabsWithTitles where title.lowercased().contains(termLower) {
+                    _ = AXUIElementSetAttributeValue(appRef, kAXMainWindowAttribute as CFString, window)
+                    _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+                    let result = AXUIElementPerformAction(tab, kAXPressAction as CFString)
+                    if result == .success {
+                        return (true, "Selected tab '\(title)' in window '\(winTitle)' via Accessibility API (matched '\(term)')")
+                    }
+                    return (false, "Failed to click tab: \(result.rawValue)")
+                }
+            }
+            
+            if isTmux {
+                NSLog("JumpHandler: tmux fallback - looking for generic tabs in window '\(winTitle)'")
+                for (tab, title) in tabsWithTitles {
+                    let isPiSession = title.hasPrefix("π -")
+                    let isZellij = title.contains("|")
+                    let isPath = title.hasPrefix("…/") || title.hasPrefix("/")
+                    let isEmpty = title.isEmpty
+                    let isGeneric = !isPiSession && !isZellij && !isPath && !isEmpty
+                    
+                    if isGeneric {
+                        _ = AXUIElementSetAttributeValue(appRef, kAXMainWindowAttribute as CFString, window)
+                        _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+                        let result = AXUIElementPerformAction(tab, kAXPressAction as CFString)
+                        if result == .success {
+                            return (true, "Selected generic tab '\(title)' via tmux fallback")
+                        }
                     }
                 }
             }
         }
         
-        let tabTitles = tabsWithTitles.map { $0.title }
-        return (false, "No matching tab found, available: \(tabTitles)")
+        return (false, "No matching tab found, available: \(allTabTitles)")
     }
     
     private func focusGhosttyViaCGWindowList(hints: [String], cwd: String?, isTmux: Bool = false) -> (Bool, String?) {
@@ -786,23 +816,23 @@ final class JumpHandler {
             searchTerms.append(URL(fileURLWithPath: cwd).lastPathComponent.lowercased())
         }
         
-        // First, activate Ghostty
-        if let ghosttyApp = NSWorkspace.shared.runningApplications.first(where: { 
-            $0.bundleIdentifier == "com.mitchellh.ghostty" 
-        }) {
-            ghosttyApp.activate()
-            Thread.sleep(forTimeInterval: 0.1)
-        }
+        // Ensure Ghostty is active first (helps AX enumerate windows reliably across Spaces)
+        _ = forceActivateGhosttyFrontmost()
         
-        // Try Accessibility API first (faster, more reliable)
+        // Try Accessibility API first (window-aware, prefers on-screen windows)
         let (axSuccess, axMsg) = focusGhosttyTabViaAccessibility(searchTerms: searchTerms, isTmux: isTmux)
         if axSuccess {
-            NSLog("JumpHandler: %@", "Accessibility API success: \(axMsg ?? "")")
-            return (true, axMsg)
+            if forceActivateGhosttyFrontmost() || isGhosttyFrontmost() {
+                NSLog("JumpHandler: %@", "Accessibility API success: \(axMsg ?? "")")
+                return (true, axMsg)
+            }
+            NSLog("JumpHandler: %@", "Accessibility selected tab but Ghostty is not frontmost; falling back to keystrokes")
+        } else {
+            NSLog("JumpHandler: %@", "Accessibility API failed: \(axMsg ?? ""), falling back to keystrokes")
         }
-        NSLog("JumpHandler: %@", "Accessibility API failed: \(axMsg ?? ""), falling back to keystrokes")
         
         // Fallback to CGWindowList + keystrokes
+        _ = forceActivateGhosttyFrontmost()
         let tabs = getGhosttyTabsViaCGWindowList()
         NSLog("JumpHandler: %@", "found \(tabs.count) Ghostty tabs")
         
@@ -821,6 +851,21 @@ final class JumpHandler {
                 }
             }
             if matchedName != nil { break }
+        }
+        
+        // tmux-specific fallback in CG path: prefer a generic terminal tab
+        // (not zellij pipe-style titles, not explicit pi session titles)
+        if matchedName == nil && isTmux {
+            if let generic = tabs.first(where: { tab in
+                let title = tab.name
+                let isPiSession = title.hasPrefix("π -")
+                let isZellij = title.contains("|")
+                let isPath = title.hasPrefix("…/") || title.hasPrefix("/")
+                return !isPiSession && !isZellij && !isPath && !title.isEmpty
+            }) {
+                matchedName = generic.name
+                NSLog("JumpHandler: tmux CG fallback selected generic tab '%@'", generic.name)
+            }
         }
         
         guard let targetName = matchedName else {
@@ -887,9 +932,8 @@ final class JumpHandler {
             }
         }
         
-        // We activated Ghostty but couldn't find exact tab - still considered success
-        // since the user is at least in Ghostty now
-        return (true, "activated Ghostty, could not find exact tab '\(targetName)'")
+        // Do not claim success unless we actually found/switched to the requested tab.
+        return (false, "activated Ghostty, but could not find exact tab '\(targetName)'")
     }
     
     // MARK: - tmux Pane Selection
@@ -1053,7 +1097,232 @@ final class JumpHandler {
         }
     }
     
+    private func isGhosttyFrontmost() -> Bool {
+        NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.mitchellh.ghostty"
+    }
+    
+    private func forceActivateGhosttyFrontmost() -> Bool {
+        if let ghosttyApp = NSWorkspace.shared.runningApplications.first(where: {
+            $0.bundleIdentifier == "com.mitchellh.ghostty"
+        }) {
+            _ = ghosttyApp.activate(options: [.activateIgnoringOtherApps, .activateAllWindows])
+            Thread.sleep(forTimeInterval: 0.12)
+            if isGhosttyFrontmost() {
+                return true
+            }
+        }
+        
+        // Strong fallback for Space/Desktop weirdness
+        let script = """
+        tell application "System Events"
+            set frontmost of process "Finder" to true
+            delay 0.08
+        end tell
+        tell application "Ghostty" to activate
+        delay 0.2
+        tell application "System Events"
+            repeat 12 times
+                if frontmost of process "Ghostty" then
+                    return "ok"
+                end if
+                delay 0.08
+            end repeat
+        end tell
+        return "timeout"
+        """
+        let result = runAppleScript(script)
+        return result == "ok" || isGhosttyFrontmost()
+    }
+    
     // MARK: - Helpers
+    
+    private func activateAndRaiseApp(_ app: NSRunningApplication) -> Bool {
+        // Normal activation first
+        _ = app.activate(options: [.activateIgnoringOtherApps, .activateAllWindows])
+        Thread.sleep(forTimeInterval: 0.12)
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier {
+            return true
+        }
+        
+        // Accessibility fallback: raise one of the app windows directly
+        let appRef = AXUIElementCreateApplication(app.processIdentifier)
+        var windowsRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(appRef, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+           let windows = windowsRef as? [AXUIElement],
+           !windows.isEmpty {
+            for window in windows {
+                _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+            }
+            // Try activation once more after raising
+            _ = app.activate(options: [.activateIgnoringOtherApps, .activateAllWindows])
+            Thread.sleep(forTimeInterval: 0.08)
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier {
+                return true
+            }
+        }
+        
+        // Last resort via System Events frontmost toggle (helps accessory apps)
+        if let name = app.localizedName {
+            let escaped = escapeForAppleScript(name)
+            let script = """
+            tell application "System Events"
+                if exists process "\(escaped)" then
+                    set frontmost of process "\(escaped)" to true
+                    return "ok"
+                end if
+            end tell
+            return "missing"
+            """
+            let result = runAppleScript(script)
+            if result == "ok" {
+                Thread.sleep(forTimeInterval: 0.08)
+                if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier {
+                    return true
+                }
+                return true
+            }
+        }
+        
+        return false
+    }
+    
+    private struct TelemetryMetadata {
+        let ppid: Int?
+        let cwd: String?
+        let sessionFile: String?
+    }
+    
+    private func focusOwningAppFromTelemetry(forMissingPid pid: Int) -> JumpResult? {
+        guard let meta = readTelemetryMetadata(for: pid) else { return nil }
+        
+        // First choice: parent process from telemetry (common for app-spawned workers)
+        if let ppid = meta.ppid,
+           let app = NSWorkspace.shared.runningApplications.first(where: { Int($0.processIdentifier) == ppid }) {
+            if activateAndRaiseApp(app) {
+                let name = app.localizedName ?? app.bundleIdentifier ?? "app"
+                NSLog("JumpHandler: focused owning app from telemetry ppid %d (%@)", ppid, name)
+                return JumpResult(
+                    ok: true,
+                    focused: true,
+                    focusedApp: name,
+                    openedShell: false,
+                    message: "Focused \(name) (worker PID \(pid) exited)"
+                )
+            }
+        }
+        
+        // Fallback: infer app name from cwd/session path metadata
+        if let hint = appHint(fromCwd: meta.cwd) ?? appHint(fromSessionFile: meta.sessionFile),
+           let app = findRunningApp(matchingHint: hint),
+           activateAndRaiseApp(app) {
+            let name = app.localizedName ?? app.bundleIdentifier ?? hint
+            NSLog("JumpHandler: focused owning app from telemetry hint '%@' -> %@", hint, name)
+            return JumpResult(
+                ok: true,
+                focused: true,
+                focusedApp: name,
+                openedShell: false,
+                message: "Focused \(name) (worker PID \(pid) exited)"
+            )
+        }
+        
+        return nil
+    }
+    
+    private func focusOwningAppForLivePid(_ pid: Int32, byPid: [Int: ProcessInfo], cwdHint: String?) -> String? {
+        if let app = findOwningRunningAppInAncestry(pid: pid, byPid: byPid),
+           activateAndRaiseApp(app) {
+            let name = app.localizedName ?? app.bundleIdentifier ?? "app"
+            NSLog("JumpHandler: focused owning app from ancestry: %@", name)
+            return name
+        }
+        
+        if let hint = appHint(fromCwd: cwdHint),
+           let app = findRunningApp(matchingHint: hint),
+           activateAndRaiseApp(app) {
+            let name = app.localizedName ?? app.bundleIdentifier ?? hint
+            NSLog("JumpHandler: focused app from cwd hint '%@' -> %@", hint, name)
+            return name
+        }
+        
+        return nil
+    }
+    
+    private func findOwningRunningAppInAncestry(pid: Int32, byPid: [Int: ProcessInfo]) -> NSRunningApplication? {
+        var current: Int32? = pid
+        var seen = Set<Int32>()
+        
+        while let cur = current, !seen.contains(cur) {
+            seen.insert(cur)
+            
+            if let app = NSWorkspace.shared.runningApplications.first(where: { Int($0.processIdentifier) == Int(cur) }) {
+                return app
+            }
+            
+            guard let process = byPid[Int(cur)] else { break }
+            current = process.ppid > 0 ? process.ppid : nil
+        }
+        
+        return nil
+    }
+    
+    private func readTelemetryMetadata(for pid: Int) -> TelemetryMetadata? {
+        let telemetryPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".pi/agent/telemetry/instances/\(pid).json")
+        
+        guard let data = try? Data(contentsOf: telemetryPath),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        
+        let process = json["process"] as? [String: Any]
+        let workspace = json["workspace"] as? [String: Any]
+        let session = json["session"] as? [String: Any]
+        
+        return TelemetryMetadata(
+            ppid: process?["ppid"] as? Int,
+            cwd: workspace?["cwd"] as? String,
+            sessionFile: session?["file"] as? String
+        )
+    }
+    
+    private func appHint(fromCwd cwd: String?) -> String? {
+        guard let cwd, !cwd.isEmpty else { return nil }
+        let components = URL(fileURLWithPath: cwd).pathComponents
+        if let idx = components.firstIndex(of: "Application Support"), idx + 1 < components.count {
+            return components[idx + 1]
+        }
+        let leaf = URL(fileURLWithPath: cwd).lastPathComponent
+        return leaf.isEmpty ? nil : leaf
+    }
+    
+    private func appHint(fromSessionFile sessionFile: String?) -> String? {
+        guard let sessionFile, !sessionFile.isEmpty else { return nil }
+        let components = URL(fileURLWithPath: sessionFile).pathComponents
+        if let idx = components.firstIndex(of: "Application Support"), idx + 1 < components.count {
+            return components[idx + 1]
+        }
+        return nil
+    }
+    
+    private func findRunningApp(matchingHint hint: String) -> NSRunningApplication? {
+        let needle = hint.lowercased()
+        
+        // Prefer exact localized name
+        if let app = NSWorkspace.shared.runningApplications.first(where: {
+            ($0.localizedName ?? "").lowercased() == needle
+        }) {
+            return app
+        }
+        
+        // Then contain match across common fields
+        return NSWorkspace.shared.runningApplications.first(where: { app in
+            let name = (app.localizedName ?? "").lowercased()
+            let bundle = (app.bundleIdentifier ?? "").lowercased()
+            let exec = (app.executableURL?.lastPathComponent ?? "").lowercased()
+            return name.contains(needle) || bundle.contains(needle) || exec.contains(needle)
+        })
+    }
     
     private func activateApp(_ appName: String) -> Bool {
         // Use native NSRunningApplication for activation
@@ -1068,8 +1337,8 @@ final class JumpHandler {
         }
         
         // Fallback: find by name
-        if let app = NSWorkspace.shared.runningApplications.first(where: { 
-            $0.localizedName?.lowercased() == appName.lowercased() 
+        if let app = NSWorkspace.shared.runningApplications.first(where: {
+            $0.localizedName?.lowercased() == appName.lowercased()
         }) {
             return app.activate(options: [.activateIgnoringOtherApps])
         }
