@@ -298,7 +298,11 @@ struct StatusBarIcon: View {
     }
     
     private var statusColor: NSColor {
-        guard serverOnline && serverEnabled else { return .labelColor }
+        // White when server is disabled (to indicate "off" state)
+        guard serverEnabled else { return .white }
+        
+        // Default color when no API key
+        guard serverOnline else { return .labelColor }
         
         // Green when any session is waiting for input, otherwise default (white/black based on appearance)
         if summary.color == "green" {

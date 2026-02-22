@@ -92,17 +92,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         speechCoordinator?.isMuted = !serverEnabled
 
         micMonitor = MicrophoneActivityMonitor { [weak self] isActive in
-            print("PiTalk: Mic callback triggered, isActive=\(isActive)")
+            debugLog("PiTalk: Mic callback triggered, isActive=\(isActive)")
             self?.speechCoordinator?.setMicrophoneActive(isActive)
         }
         micMonitor?.start()
-        print("PiTalk: Mic monitor started")
+        debugLog("PiTalk: Mic monitor started")
 
         // Only start broker if server is enabled
         if serverEnabled {
             startLocalBroker()
         } else {
-            print("PiTalk: Server disabled, broker not started")
+            debugLog("PiTalk: Server disabled, broker not started")
         }
     }
     
@@ -161,15 +161,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var healthServer: HealthHTTPServer?
     
     func startLocalBroker() {
-        print("PiTalk: startLocalBroker called, coordinator=\(speechCoordinator != nil), localBroker=\(localBroker != nil)")
+        debugLog("PiTalk: startLocalBroker called, coordinator=\(speechCoordinator != nil), localBroker=\(localBroker != nil)")
         guard let coordinator = speechCoordinator else {
-            print("PiTalk: No coordinator, cannot start broker")
+            debugLog("PiTalk: No coordinator, cannot start broker")
             return
         }
         
         // Don't start if already running
         if localBroker != nil {
-            print("PiTalk: Broker already running, skipping start")
+            debugLog("PiTalk: Broker already running, skipping start")
             return
         }
         
@@ -177,14 +177,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let broker = try LocalSpeechBroker(port: brokerPort, coordinator: coordinator)
             broker.start()
             localBroker = broker
-            print("PiTalk: Local broker listening on 127.0.0.1:\(brokerPort)")
+            debugLog("PiTalk: Local broker listening on 127.0.0.1:\(brokerPort)")
             
             // Also start HTTP health server on 18080 (pi-tts extension expects this)
             if healthServer == nil {
                 let server = HealthHTTPServer(port: 18080)
                 server.start()
                 healthServer = server
-                print("PiTalk: Health server listening on 127.0.0.1:18080")
+                debugLog("PiTalk: Health server listening on 127.0.0.1:18080")
             }
         } catch {
             print("PiTalk: Failed to start local broker: \(error)")
@@ -192,12 +192,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func stopLocalBroker() {
-        print("PiTalk: stopLocalBroker called, localBroker=\(localBroker != nil)")
+        debugLog("PiTalk: stopLocalBroker called, localBroker=\(localBroker != nil)")
         localBroker?.stop()
         localBroker = nil
         healthServer?.stop()
         healthServer = nil
-        print("PiTalk: Broker and health server stopped")
+        debugLog("PiTalk: Broker and health server stopped")
     }
     
     @objc func stopCurrentSpeech() {
@@ -447,6 +447,23 @@ final class RequestHistoryStore: ObservableObject {
         _ = syncOnMain { () -> Bool in
             entries.removeAll()
             persist()
+            return true
+        }
+    }
+    
+    /// Cancel all entries that are currently queued or playing (stale entries)
+    func cancelAllPending() {
+        _ = syncOnMain { () -> Bool in
+            var changed = false
+            for i in entries.indices {
+                if entries[i].status == .queued || entries[i].status == .playing {
+                    entries[i].status = .cancelled
+                    changed = true
+                }
+            }
+            if changed {
+                persist()
+            }
             return true
         }
     }
@@ -705,12 +722,12 @@ final class SpeechPlaybackCoordinator {
     }
 
     func stopAll() {
-        print("PiTalk: stopAll() called")
+        debugLog("PiTalk: stopAll() called")
         let state = queue.sync { () -> (pending: [UUID], active: UUID?) in
             let pendingIds = allPendingHistoryIdsLocked()
             let activeId = currentJobHistoryId
             
-            print("PiTalk: stopAll - pending=\(pendingIds.count), hasActive=\(activeId != nil), currentProcess=\(currentProcess != nil)")
+            debugLog("PiTalk: stopAll - pending=\(pendingIds.count), hasActive=\(activeId != nil), currentProcess=\(currentProcess != nil)")
 
             queuesByKey.removeAll()
             queueOrder.removeAll()
@@ -745,17 +762,17 @@ final class SpeechPlaybackCoordinator {
         
         let hasProcess = currentProcess != nil
         let isRunning = currentProcess?.isRunning == true
-        print("PiTalk: Coordinator mic state: \(active ? "ACTIVE" : "INACTIVE"), hasProcess=\(hasProcess), isRunning=\(isRunning)")
+        debugLog("PiTalk: Coordinator mic state: \(active ? "ACTIVE" : "INACTIVE"), hasProcess=\(hasProcess), isRunning=\(isRunning)")
 
         if active {
             let activelyPlaying = currentProcess?.isRunning == true
 
             // Requirement: if mic starts while voice is already playing, cancel all queued work at that moment.
             guard activelyPlaying else { 
-                print("PiTalk: Mic active but no playback running, skipping stop")
+                debugLog("PiTalk: Mic active but no playback running, skipping stop")
                 return 
             }
-            print("PiTalk: Mic active, stopping playback!")
+            debugLog("PiTalk: Mic active, stopping playback!")
 
             let pendingIds = allPendingHistoryIdsLocked()
             let activeId = currentJobHistoryId
@@ -1175,17 +1192,17 @@ final class SpeechPlaybackCoordinator {
 
     private func terminateCurrentProcessLocked() {
         guard let process = currentProcess else {
-            print("PiTalk: terminateCurrentProcessLocked - no current process")
+            debugLog("PiTalk: terminateCurrentProcessLocked - no current process")
             return
         }
 
-        print("PiTalk: terminateCurrentProcessLocked - process PID=\(process.processIdentifier), isRunning=\(process.isRunning)")
+        debugLog("PiTalk: terminateCurrentProcessLocked - process PID=\(process.processIdentifier), isRunning=\(process.isRunning)")
         if process.isRunning {
             process.terminate()
             let pid = process.processIdentifier
             DispatchQueue.global().asyncAfter(deadline: .now() + 0.25) {
                 if process.isRunning {
-                    print("PiTalk: Force killing process PID=\(pid)")
+                    debugLog("PiTalk: Force killing process PID=\(pid)")
                     kill(pid, SIGKILL)
                 }
             }
@@ -1315,7 +1332,7 @@ final class LocalSpeechBroker {
     }
 
     func stop() {
-        print("PiTalk: LocalSpeechBroker.stop() - cancelling listener")
+        debugLog("PiTalk: LocalSpeechBroker.stop() - cancelling listener")
         listener.newConnectionHandler = nil
         listener.cancel()
     }

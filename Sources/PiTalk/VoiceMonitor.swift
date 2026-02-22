@@ -104,7 +104,7 @@ final class VoiceMonitor: ObservableObject {
     @Published var serverEnabled: Bool = !UserDefaults.standard.bool(forKey: "serverDisabled")
     
     func handleServerToggle(enabled: Bool) {
-        print("PiTalk: handleServerToggle called with enabled=\(enabled)")
+        debugLog("PiTalk: handleServerToggle called with enabled=\(enabled)")
         UserDefaults.standard.set(!enabled, forKey: "serverDisabled")
         
         guard let appDelegate = AppDelegate.shared else {
@@ -114,14 +114,14 @@ final class VoiceMonitor: ObservableObject {
         
         if enabled {
             // Start the broker server (with small delay to allow port to be released)
-            print("PiTalk: Starting broker...")
+            debugLog("PiTalk: Starting broker...")
             appDelegate.speechCoordinator?.isMuted = false
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 appDelegate.startLocalBroker()
             }
         } else {
             // Stop playback and shut down the broker server
-            print("PiTalk: Stopping broker and playback...")
+            debugLog("PiTalk: Stopping broker and playback...")
             appDelegate.speechCoordinator?.stopAll()
             appDelegate.speechCoordinator?.isMuted = true
             appDelegate.stopLocalBroker()
@@ -296,9 +296,11 @@ final class VoiceMonitor: ObservableObject {
     
     func stopAll() {
         // Get app delegate and call stopCurrentSpeech
-        if let appDelegate = NSApp.delegate as? AppDelegate {
+        if let appDelegate = AppDelegate.shared {
             appDelegate.stopCurrentSpeech()
         }
+        // Also clear any stale queued/playing entries in history
+        RequestHistoryStore.shared.cancelAllPending()
         lastMessage = "Stopped all speech"
     }
     
