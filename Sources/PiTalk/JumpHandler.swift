@@ -614,9 +614,22 @@ final class JumpHandler {
         // This ensures more specific terms (like zellij session name) match before generic ones
         for term in searchTerms {
             let termLower = term.lowercased()
+            
+            // First pass: prefer tabs with "π -" prefix (actual pi sessions)
+            for (tab, title) in tabsWithTitles {
+                if title.lowercased().contains(termLower) && title.hasPrefix("π -") {
+                    let result = AXUIElementPerformAction(tab, kAXPressAction as CFString)
+                    if result == .success {
+                        return (true, "Selected tab '\(title)' via Accessibility API (matched '\(term)')")
+                    } else {
+                        return (false, "Failed to click tab: \(result.rawValue)")
+                    }
+                }
+            }
+            
+            // Second pass: any matching tab
             for (tab, title) in tabsWithTitles {
                 if title.lowercased().contains(termLower) {
-                    // Found it! Click this tab
                     let result = AXUIElementPerformAction(tab, kAXPressAction as CFString)
                     if result == .success {
                         return (true, "Selected tab '\(title)' via Accessibility API (matched '\(term)')")
