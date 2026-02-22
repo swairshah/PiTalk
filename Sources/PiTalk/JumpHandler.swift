@@ -2,12 +2,26 @@ import Foundation
 import AppKit
 import CoreGraphics
 import os.log
+import ApplicationServices
 
 /// Handles jumping to terminal windows for a given PID
 /// Ported from pi-statusbar's daemon logic with all fixes
 final class JumpHandler {
     
     private static let logger = Logger(subsystem: "com.pitalk", category: "JumpHandler")
+    
+    /// Check if we have accessibility permissions, prompt if not
+    /// Returns true if we have permissions, false if not (and user was prompted)
+    static func checkAccessibilityPermissions() -> Bool {
+        let trusted = AXIsProcessTrusted()
+        if !trusted {
+            // Prompt user to grant accessibility permissions
+            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+            AXIsProcessTrustedWithOptions(options)
+            return false
+        }
+        return true
+    }
     
     struct JumpResult {
         let ok: Bool
@@ -50,6 +64,11 @@ final class JumpHandler {
     }
     
     static func jump(to pid: Int) -> JumpResult {
+        // Check accessibility permissions first
+        if !checkAccessibilityPermissions() {
+            return JumpResult(ok: false, focused: false, focusedApp: nil, openedShell: false,
+                            message: "Accessibility permissions required. Please grant access in System Settings.")
+        }
         let handler = JumpHandler()
         return handler.performJump(pid: pid)
     }
