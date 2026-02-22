@@ -49,11 +49,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var micMonitor: MicrophoneActivityMonitor?
     let brokerPort = 18081
     
-    // Dock icon visibility (defaults to false for menubar app)
+    // Dock icon visibility (defaults to true so window is accessible)
     var showDockIcon: Bool {
         get { 
             if UserDefaults.standard.object(forKey: "showDockIcon") == nil {
-                return false
+                return true  // Default to showing dock icon
             }
             return UserDefaults.standard.bool(forKey: "showDockIcon") 
         }
@@ -222,8 +222,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             window.titleVisibility = .hidden
             window.titlebarAppearsTransparent = true
             window.isMovableByWindowBackground = true
-            window.setContentSize(NSSize(width: 520, height: 480))
-            window.minSize = NSSize(width: 420, height: 380)
+            window.setContentSize(NSSize(width: 520, height: 680))
+            window.minSize = NSSize(width: 420, height: 480)
             window.center()
             
             settingsWindow = window
@@ -1446,36 +1446,288 @@ final class LocalSpeechBroker {
 // MARK: - Settings View
 
 struct SettingsView: View {
+    @StateObject private var monitor = VoiceMonitor()
+    
     var body: some View {
         TabView {
-            GeneralSettingsView()
+            SessionsTabView(monitor: monitor)
                 .tabItem {
-                    Text("General")
+                    Label("Sessions", systemImage: "list.bullet")
+                }
+
+            SettingsTabView()
+                .tabItem {
+                    Label("Settings", systemImage: "gear")
                 }
 
             HistoryView()
                 .tabItem {
-                    Text("History")
-                }
-
-            HelpView()
-                .tabItem {
-                    Text("Help")
+                    Label("History", systemImage: "clock")
                 }
 
             AboutView()
                 .tabItem {
-                    Text("About")
+                    Label("About", systemImage: "info.circle")
                 }
         }
     }
 }
 
-struct GeneralSettingsView: View {
+// MARK: - Sessions Tab (Main View)
+
+struct SessionsTabView: View {
+    @ObservedObject var monitor: VoiceMonitor
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Circle()
+                    .fill(monitor.summary.uiColor)
+                    .frame(width: 12, height: 12)
+                Text(monitor.summary.label)
+                    .font(.headline)
+                
+                Spacer()
+                
+                // Speed control
+                HStack(spacing: 4) {
+                    Image(systemName: "hare")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Slider(value: $monitor.speechSpeed, in: 0.7...1.2, step: 0.05)
+                        .frame(width: 80)
+                    Text(String(format: "%.1fx", monitor.speechSpeed))
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                
+                // Server toggle
+                Toggle("", isOn: Binding(
+                    get: { monitor.serverEnabled },
+                    set: { newValue in
+                        monitor.serverEnabled = newValue
+                        monitor.handleServerToggle(enabled: newValue)
+                    }
+                ))
+                .toggleStyle(.switch)
+                .controlSize(.small)
+            }
+            .padding()
+            
+            // Status pills
+            HStack(spacing: 8) {
+                StatusPill(text: "sessions: \(monitor.sessions.count)")
+                if monitor.speakingCount > 0 {
+                    StatusPill(text: "speaking: \(monitor.speakingCount)", color: .red)
+                }
+                if monitor.totalQueuedItems > 0 {
+                    StatusPill(text: "queued: \(monitor.totalQueuedItems)", color: .orange)
+                }
+                Spacer()
+            }
+            .padding(.horizontal)
+            .padding(.bottom, 8)
+            
+            Divider()
+            
+            // Sessions list
+            if monitor.sessions.isEmpty {
+                VStack {
+                    Spacer()
+                    Text("No active pi sessions")
+                        .foregroundStyle(.secondary)
+                    Text("Start a pi session to see it here")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                }
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(monitor.sessions) { session in
+                            SessionRowView(session: session, monitor: monitor)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                }
+            }
+            
+            Divider()
+            
+            // Footer buttons
+            HStack {
+                Button("Stop All") {
+                    monitor.stopAll()
+                }
+                .disabled(monitor.speakingCount == 0 && monitor.totalQueuedItems == 0)
+                
+                Spacer()
+                
+                if let message = monitor.lastMessage, !message.isEmpty {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding()
+        }
+    }
+}
+
+struct StatusPill: View {
+    let text: String
+    var color: Color = .secondary
+    
+    var body: some View {
+        Text(text)
+            .font(.caption)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.15))
+            .foregroundStyle(color)
+            .cornerRadius(8)
+    }
+}
+
+struct SessionRowView: View {
+    let session: VoiceSession
+    @ObservedObject var monitor: VoiceMonitor
+    @State private var isHovered = false
+    
+    private var displayName: String {
+        let app = session.sourceApp
+        if let sid = session.sessionId {
+            let shortId = sid.prefix(12)
+            return "\(app) [\(shortId)...]"
+        }
+        return app
+    }
+    
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            // Status indicator
+            Circle()
+                .fill(session.activity.color)
+                .frame(width: 10, height: 10)
+            
+            // Main content
+            VStack(alignment: .leading, spacing: 4) {
+                // Title row
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(displayName)
+                        .font(.system(.body, design: .default, weight: .semibold))
+                    
+                    Text("·")
+                        .foregroundStyle(.tertiary)
+                    
+                    Text(session.activity.label)
+                        .font(.subheadline)
+                        .foregroundStyle(session.activity.color)
+                }
+                
+                // Last spoken text
+                if let text = session.currentText ?? session.lastSpokenText {
+                    Text(text)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .truncationMode(.tail)
+                }
+                
+                // Metadata row
+                HStack(spacing: 12) {
+                    if let pid = session.pid {
+                        Label {
+                            Text("\(pid)")
+                                .font(.system(.caption2, design: .monospaced))
+                        } icon: {
+                            Image(systemName: "number")
+                                .font(.system(size: 8))
+                        }
+                        .foregroundStyle(.tertiary)
+                    }
+                    
+                    if let voice = session.voice {
+                        Label {
+                            Text(voice)
+                                .font(.caption2)
+                        } icon: {
+                            Image(systemName: "waveform")
+                                .font(.system(size: 8))
+                        }
+                        .foregroundStyle(.tertiary)
+                    }
+                    
+                    if session.queuedCount > 0 {
+                        Label {
+                            Text("\(session.queuedCount) queued")
+                                .font(.caption2)
+                        } icon: {
+                            Image(systemName: "text.badge.plus")
+                                .font(.system(size: 8))
+                        }
+                        .foregroundStyle(.orange)
+                    }
+                }
+            }
+            
+            Spacer()
+            
+            // Jump button
+            if session.pid != nil {
+                Button {
+                    monitor.jump(to: session)
+                } label: {
+                    Text("Jump")
+                        .font(.caption.weight(.medium))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Color.accentColor.opacity(isHovered ? 0.2 : 0.1))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.accentColor.opacity(0.3), lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color(nsColor: .controlBackgroundColor).opacity(isHovered ? 1 : 0.5))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+        )
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.15)) {
+                isHovered = hovering
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if session.pid != nil {
+                monitor.jump(to: session)
+            }
+        }
+    }
+}
+
+// MARK: - Settings Tab (renamed from General)
+
+struct SettingsTabView: View {
     @AppStorage("ttsVoice") var voice = "ally"
     @AppStorage("elevenLabsApiKey") var apiKey = ""
     @AppStorage("launchAtLogin") var launchAtLogin = false
-    @AppStorage("showDockIcon") var showDockIcon = false
+    @AppStorage("showDockIcon") var showDockIcon = true
     @State private var isPreviewPlaying = false
     @State private var showApiKey = false
     

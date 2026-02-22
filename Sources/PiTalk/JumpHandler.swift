@@ -10,6 +10,11 @@ final class JumpHandler {
     
     private static let logger = Logger(subsystem: "com.pitalk", category: "JumpHandler")
     
+    /// Check if we have accessibility permissions (no prompt)
+    static func hasAccessibilityPermissions() -> Bool {
+        return AXIsProcessTrusted()
+    }
+    
     /// Check if we have accessibility permissions, prompt if not
     /// Returns true if we have permissions, false if not (and user was prompted)
     static func checkAccessibilityPermissions() -> Bool {
@@ -21,6 +26,13 @@ final class JumpHandler {
             return false
         }
         return true
+    }
+    
+    /// Open System Settings to Accessibility pane
+    static func openAccessibilitySettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
     }
     
     struct JumpResult {

@@ -151,7 +151,7 @@ struct StatusBarContentView: View {
                     .buttonStyle(MenuBarButtonStyle())
                     .disabled(monitor.speakingCount == 0 && monitor.totalQueuedItems == 0)
                     
-                    Button("Settings") {
+                    Button("Window") {
                         openSettings()
                     }
                     .buttonStyle(MenuBarButtonStyle())
@@ -279,9 +279,7 @@ struct StatusBarContentView: View {
     }
     
     private func openSettings() {
-        if let appDelegate = NSApp.delegate as? AppDelegate {
-            appDelegate.openSettings()
-        }
+        AppDelegate.shared?.openSettings()
     }
 }
 
