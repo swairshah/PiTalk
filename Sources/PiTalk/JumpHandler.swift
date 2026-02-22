@@ -161,8 +161,9 @@ final class JumpHandler {
             if let muxType = muxInfo?.type {
                 searchHints.append(muxType)
             }
-            NSLog("JumpHandler: %@", "Step 4 - calling focusGhosttyViaCGWindowList with hints=\(searchHints)")
-            let (success, msg) = focusGhosttyViaCGWindowList(hints: searchHints, cwd: cwd)
+            let isTmux = muxInfo?.type == "tmux"
+            NSLog("JumpHandler: %@", "Step 4 - calling focusGhosttyViaCGWindowList with hints=\(searchHints), isTmux=\(isTmux)")
+            let (success, msg) = focusGhosttyViaCGWindowList(hints: searchHints, cwd: cwd, isTmux: isTmux)
             NSLog("JumpHandler: %@", "Step 4 result: success=\(success), msg=\(msg ?? "nil")")
             focused = success
             if focused {
@@ -608,7 +609,7 @@ final class JumpHandler {
     
     // MARK: - Accessibility API Tab Switching
     
-    private func focusGhosttyTabViaAccessibility(searchTerms: [String]) -> (Bool, String?) {
+    private func focusGhosttyTabViaAccessibility(searchTerms: [String], isTmux: Bool = false) -> (Bool, String?) {
         guard let ghosttyApp = NSWorkspace.shared.runningApplications.first(where: { 
             $0.bundleIdentifier == "com.mitchellh.ghostty" 
         }) else {
@@ -692,11 +693,32 @@ final class JumpHandler {
             }
         }
         
+        // Fallback for tmux: try "generic" tabs (not pi sessions, not paths, not zellij)
+        // This handles cases where the tmux tab was manually renamed
+        if isTmux {
+            NSLog("JumpHandler: tmux fallback - looking for generic tabs")
+            for (tab, title) in tabsWithTitles {
+                let isPiSession = title.hasPrefix("π -")
+                let isZellij = title.contains("|")
+                let isPath = title.hasPrefix("…/") || title.hasPrefix("/")
+                let isEmpty = title.isEmpty
+                let isGeneric = !isPiSession && !isZellij && !isPath && !isEmpty
+                
+                if isGeneric {
+                    NSLog("JumpHandler: trying generic tab '\(title)'")
+                    let result = AXUIElementPerformAction(tab, kAXPressAction as CFString)
+                    if result == .success {
+                        return (true, "Selected generic tab '\(title)' via tmux fallback")
+                    }
+                }
+            }
+        }
+        
         let tabTitles = tabsWithTitles.map { $0.title }
         return (false, "No matching tab found, available: \(tabTitles)")
     }
     
-    private func focusGhosttyViaCGWindowList(hints: [String], cwd: String?) -> (Bool, String?) {
+    private func focusGhosttyViaCGWindowList(hints: [String], cwd: String?, isTmux: Bool = false) -> (Bool, String?) {
         NSLog("JumpHandler: %@", "focusGhosttyViaCGWindowList starting...")
         
         // Build search terms from hints and cwd
@@ -714,7 +736,7 @@ final class JumpHandler {
         }
         
         // Try Accessibility API first (faster, more reliable)
-        let (axSuccess, axMsg) = focusGhosttyTabViaAccessibility(searchTerms: searchTerms)
+        let (axSuccess, axMsg) = focusGhosttyTabViaAccessibility(searchTerms: searchTerms, isTmux: isTmux)
         if axSuccess {
             NSLog("JumpHandler: %@", "Accessibility API success: \(axMsg ?? "")")
             return (true, axMsg)
