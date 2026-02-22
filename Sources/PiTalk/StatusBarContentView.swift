@@ -3,6 +3,8 @@ import AppKit
 
 struct StatusBarContentView: View {
     @ObservedObject var monitor: VoiceMonitor
+    @StateObject private var audioRecorder = AudioRecorder()
+    @State private var recordingForSession: VoiceSession? = nil
     
     private static let relativeDateFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
@@ -178,75 +180,100 @@ struct StatusBarContentView: View {
     
     @ViewBuilder
     private func sessionRow(_ session: VoiceSession) -> some View {
-        Button {
-            monitor.jump(to: session)
-        } label: {
-            HStack(alignment: .top, spacing: 8) {
-                Circle()
-                    .fill(session.activity.color)
-                    .frame(width: 8, height: 8)
-                    .padding(.top, 4)
+        HStack(alignment: .top, spacing: 8) {
+            Circle()
+                .fill(session.activity.color)
+                .frame(width: 8, height: 8)
+                .padding(.top, 4)
+            
+            VStack(alignment: .leading, spacing: 2) {
+                // Primary line: app [session] · activity
+                Text(sessionPrimaryLine(session))
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
                 
-                VStack(alignment: .leading, spacing: 2) {
-                    // Primary line: app [session] · activity
-                    Text(sessionPrimaryLine(session))
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.primary)
+                // Last spoken text (if any)
+                if let text = session.currentText ?? session.lastSpokenText {
+                    Text("💬 " + trimmedText(text, maxLength: 45))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
-                    
-                    // Last spoken text (if any)
-                    if let text = session.currentText ?? session.lastSpokenText {
-                        Text("💬 " + trimmedText(text, maxLength: 45))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                    
-                    // Metadata line: PID · voice · queued · last time
-                    HStack(spacing: 6) {
-                        if let pid = session.pid {
-                            Text("PID \(pid)")
-                                .font(.system(.caption2, design: .monospaced))
-                        }
-                        
-                        if let voice = session.voice {
-                            HStack(spacing: 2) {
-                                Image(systemName: "waveform")
-                                Text(voice)
-                            }
-                            .font(.caption2)
-                        }
-                        
-                        if session.queuedCount > 0 {
-                            Text("\(session.queuedCount) queued")
-                                .font(.caption2)
-                                .foregroundStyle(.orange)
-                        }
-                        
-                        if (session.activity == .idle || session.activity == .waiting), let lastAt = session.lastSpokenAt {
-                            Text("· \(Self.relativeDateFormatter.localizedString(for: lastAt, relativeTo: Date()))")
-                                .font(.caption2)
-                        }
-                    }
-                    .foregroundStyle(.secondary)
                 }
                 
-                Spacer()
-                
-                if session.pid != nil {
-                    Text("Jump")
-                        .font(.caption)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(Color.blue.opacity(0.15))
-                        )
-                        .foregroundStyle(.blue)
+                // Metadata line: PID · voice · queued · last time
+                HStack(spacing: 6) {
+                    if let pid = session.pid {
+                        Text("PID \(pid)")
+                            .font(.system(.caption2, design: .monospaced))
+                    }
+                    
+                    if let voice = session.voice {
+                        HStack(spacing: 2) {
+                            Image(systemName: "waveform")
+                            Text(voice)
+                        }
+                        .font(.caption2)
+                    }
+                    
+                    if session.queuedCount > 0 {
+                        Text("\(session.queuedCount) queued")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    }
+                    
+                    if (session.activity == .idle || session.activity == .waiting), let lastAt = session.lastSpokenAt {
+                        Text("· \(Self.relativeDateFormatter.localizedString(for: lastAt, relativeTo: Date()))")
+                            .font(.caption2)
+                    }
+                }
+                .foregroundStyle(.secondary)
+            }
+            
+            Spacer()
+            
+            if let pid = session.pid {
+                VStack(spacing: 4) {
+                    Button("Jump") {
+                        monitor.jump(to: session)
+                    }
+                    .font(.caption)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.blue.opacity(0.15))
+                    )
+                    .foregroundStyle(.blue)
+                    .buttonStyle(.plain)
+                    
+                    // Push-to-talk mic button
+                    MicButton(
+                        isRecording: audioRecorder.isRecording && recordingForSession?.id == session.id,
+                        onPress: {
+                            recordingForSession = session
+                            audioRecorder.startRecording()
+                        },
+                        onRelease: {
+                            let targetSession = session
+                            if let audioData = audioRecorder.stopRecording() {
+                                print("PiTalk: Got \(audioData.count) bytes of audio, transcribing...")
+                                
+                                SpeechToText.transcribe(audioData: audioData) { result in
+                                    if result.success, let text = result.text, !text.isEmpty {
+                                        print("PiTalk: Transcribed: \(text)")
+                                        monitor.sendText(to: targetSession, text: text)
+                                    } else {
+                                        print("PiTalk: Transcription failed: \(result.error ?? "unknown")")
+                                    }
+                                }
+                            }
+                            recordingForSession = nil
+                        }
+                    )
                 }
             }
         }
-        .buttonStyle(.plain)
         .padding(.vertical, 3)
     }
     
@@ -370,5 +397,42 @@ struct MenuBarButtonStyle: ButtonStyle {
             )
             .foregroundStyle(isEnabled ? Color.accentColor : .secondary)
             .opacity(isEnabled ? 1.0 : 0.5)
+    }
+}
+
+// MARK: - Push-to-Talk Mic Button
+
+struct MicButton: View {
+    let isRecording: Bool
+    let onPress: () -> Void
+    let onRelease: () -> Void
+    
+    @State private var isPressed = false
+    
+    var body: some View {
+        Image(systemName: isRecording ? "mic.fill" : "mic")
+            .font(.system(size: 14))
+            .foregroundStyle(isRecording ? .red : .orange)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(isRecording ? Color.red.opacity(0.2) : Color.orange.opacity(0.15))
+            )
+            .scaleEffect(isPressed ? 1.1 : 1.0)
+            .animation(.easeInOut(duration: 0.1), value: isPressed)
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        if !isPressed {
+                            isPressed = true
+                            onPress()
+                        }
+                    }
+                    .onEnded { _ in
+                        isPressed = false
+                        onRelease()
+                    }
+            )
     }
 }

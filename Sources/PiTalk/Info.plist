@@ -28,5 +28,7 @@
     <string>Copyright © 2026. All rights reserved.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>PiTalk needs microphone access to record voice commands for pi sessions.</string>
 </dict>
 </plist>

@@ -6,6 +6,11 @@ import Network
 import Darwin
 import CoreAudio
 
+// Notification for mic activity changes
+extension Notification.Name {
+    static let micActivityChanged = Notification.Name("PiTalkMicActivityChanged")
+}
+
 // Debug logging - only prints when PITALK_DEBUG=1
 fileprivate let debugEnabled = ProcessInfo.processInfo.environment["PITALK_DEBUG"] == "1"
 fileprivate func debugLog(_ message: String) {
@@ -94,6 +99,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         micMonitor = MicrophoneActivityMonitor { [weak self] isActive in
             debugLog("PiTalk: Mic callback triggered, isActive=\(isActive)")
             self?.speechCoordinator?.setMicrophoneActive(isActive)
+            // Notify VoiceMonitor of mic state change
+            NotificationCenter.default.post(name: .micActivityChanged, object: nil, userInfo: ["isActive": isActive])
         }
         micMonitor?.start()
         debugLog("PiTalk: Mic monitor started")

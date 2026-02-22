@@ -53,6 +53,7 @@ struct VoiceSession: Identifiable, Equatable {
     var lastSpokenText: String?
     var cwd: String?
     var tty: String?
+    var mux: String?
 }
 
 struct VoiceSummary: Equatable {
@@ -100,6 +101,9 @@ final class VoiceMonitor: ObservableObject {
     var queuedCount: Int { sessions.filter { $0.activity == .queued }.count }
     var totalQueuedItems: Int { recentHistory.filter { $0.status == .queued }.count }
     
+    // Track mic activity to freeze UI order while recording
+    var isMicActive: Bool = false
+    
     // Server on/off toggle - stops/starts the broker server entirely
     @Published var serverEnabled: Bool = !UserDefaults.standard.bool(forKey: "serverDisabled")
     
@@ -140,9 +144,30 @@ final class VoiceMonitor: ObservableObject {
         }
     }
     
+    private var micObserver: NSObjectProtocol?
+    
     init() {
+        // Listen for mic activity changes to freeze UI order while recording
+        micObserver = NotificationCenter.default.addObserver(
+            forName: .micActivityChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            if let isActive = notification.userInfo?["isActive"] as? Bool {
+                Task { @MainActor in
+                    self?.isMicActive = isActive
+                }
+            }
+        }
+        
         // Start monitoring immediately so the menubar icon shows correct state on launch
         start()
+    }
+    
+    deinit {
+        if let observer = micObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
     
     func start() {
@@ -166,7 +191,32 @@ final class VoiceMonitor: ObservableObject {
         
         // Build sessions from history entries + telemetry
         let entries = historyStore.entries
-        sessions = buildSessions(from: entries, telemetry: telemetryInstances)
+        let newSessions = buildSessions(from: entries, telemetry: telemetryInstances)
+        
+        // If mic is active, preserve current order to avoid UI jumping while recording
+        if isMicActive && !sessions.isEmpty {
+            // Keep current order but update session data
+            var updatedSessions: [VoiceSession] = []
+            let newSessionsById = Dictionary(uniqueKeysWithValues: newSessions.map { ($0.id, $0) })
+            
+            // First, keep existing sessions in their current order (with updated data)
+            for existing in sessions {
+                if let updated = newSessionsById[existing.id] {
+                    updatedSessions.append(updated)
+                }
+            }
+            
+            // Then add any new sessions at the end
+            for new in newSessions {
+                if !updatedSessions.contains(where: { $0.id == new.id }) {
+                    updatedSessions.append(new)
+                }
+            }
+            
+            sessions = updatedSessions
+        } else {
+            sessions = newSessions
+        }
         summary = buildSummary(from: sessions)
         
         // Get recent history (last 10 completed items)
@@ -324,16 +374,31 @@ final class VoiceMonitor: ObservableObject {
             }
         }
     }
+
+    func sendText(to session: VoiceSession, text: String) {
+        print("PiTalk: sendText - pid=\(session.pid ?? -1), tty=\(session.tty ?? "nil"), mux=\(session.mux ?? "nil")")
+        lastMessage = "Sending..."
+        
+        SendHandler.send(pid: session.pid, tty: session.tty, mux: session.mux, text: text) { [weak self] result in
+            print("PiTalk: SendHandler result: \(result.success), \(result.message ?? "")")
+            self?.lastMessage = result.message ?? (result.success ? "Sent" : "Failed")
+        }
+    }
     
     private func buildSessions(from entries: [RequestHistoryEntry], telemetry: [PiTelemetryInstance]) -> [VoiceSession] {
         var sessions: [VoiceSession] = []
         var seenPids = Set<Int>()
+        
+        // Get daemon status for TTY/mux info
+        let daemonAgents = DaemonClient.status()?.agents ?? []
+        let agentsByPid: [Int32: DaemonClient.AgentState] = Dictionary(uniqueKeysWithValues: daemonAgents.map { ($0.pid, $0) })
         
         // First, create sessions from pi telemetry (accurate status)
         for instance in telemetry {
             seenPids.insert(instance.pid)
             
             let cwdName = instance.cwd.map { URL(fileURLWithPath: $0).lastPathComponent }
+            let agent = agentsByPid[Int32(instance.pid)]
             
             var session = VoiceSession(
                 id: "pid-\(instance.pid)",
@@ -347,7 +412,8 @@ final class VoiceMonitor: ObservableObject {
                 lastSpokenAt: nil,
                 lastSpokenText: nil,
                 cwd: instance.cwd,
-                tty: nil
+                tty: agent?.tty,
+                mux: agent?.mux
             )
             
             // Check if this pid has any voice history
@@ -422,19 +488,23 @@ final class VoiceMonitor: ObservableObject {
                 queuedCount = queuedEntries.count
             }
             
+            let pid = bucketEntries.compactMap { $0.pid }.first
+            let agent = pid.flatMap { agentsByPid[Int32($0)] }
+            
             let session = VoiceSession(
                 id: key,
                 sourceApp: sourceApp,
                 sessionId: sessionId == "__none__" ? nil : sessionId,
-                pid: bucketEntries.compactMap { $0.pid }.first,
+                pid: pid,
                 activity: activity,
                 currentText: currentText,
                 queuedCount: queuedCount,
                 voice: mostRecent.voice,
                 lastSpokenAt: playedEntries.sorted(by: { $0.timestamp > $1.timestamp }).first?.timestamp,
                 lastSpokenText: playedEntries.sorted(by: { $0.timestamp > $1.timestamp }).first?.text,
-                cwd: nil,
-                tty: nil
+                cwd: agent?.cwd,
+                tty: agent?.tty,
+                mux: agent?.mux
             )
             
             sessions.append(session)

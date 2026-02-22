@@ -80,6 +80,15 @@ enum DaemonClient {
         }
     }
 
+    struct SendResponse: Decodable {
+        let ok: Bool
+        let pid: Int32?
+        let tty: String?
+        let mux: String?
+        let sent: Bool?
+        let error: String?
+    }
+
     static func status() -> StatusResponse? {
         request("status", as: StatusResponse.self)
     }
@@ -88,6 +97,13 @@ enum DaemonClient {
         debugLog("DaemonClient: sending jump \(pid)")
         let response = request("jump \(pid)", as: JumpResponse.self)
         debugLog("DaemonClient: jump response = \(String(describing: response))")
+        return response
+    }
+
+    static func send(pid: Int32, text: String) -> SendResponse? {
+        debugLog("DaemonClient: sending text to \(pid)")
+        let response = request("send \(pid) \(text)", as: SendResponse.self)
+        debugLog("DaemonClient: send response = \(String(describing: response))")
         return response
     }
     
