@@ -311,8 +311,10 @@ final class VoiceMonitor: ObservableObject {
             // Check if this pid has any voice history
             let pidEntries = entries.filter { $0.pid == instance.pid }
             if !pidEntries.isEmpty {
-                let playingEntry = pidEntries.first { $0.status == .playing }
-                let queuedEntries = pidEntries.filter { $0.status == .queued }
+                // Only consider entries from last 2 minutes as "playing" (in case status got stuck)
+                let recentCutoff = Date().addingTimeInterval(-120)
+                let playingEntry = pidEntries.first { $0.status == .playing && $0.timestamp > recentCutoff }
+                let queuedEntries = pidEntries.filter { $0.status == .queued && $0.timestamp > recentCutoff }
                 let playedEntries = pidEntries.filter { $0.status == .played }
                 
                 if let playing = playingEntry {

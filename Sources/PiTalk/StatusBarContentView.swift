@@ -46,7 +46,7 @@ struct StatusBarContentView: View {
     }
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             // Header
             HStack(spacing: 8) {
                 Circle()
@@ -54,9 +54,11 @@ struct StatusBarContentView: View {
                     .frame(width: 10, height: 10)
                 Text(monitor.summary.label)
                     .font(.headline)
+                
                 Spacer()
+                
                 Text(monitor.serverOnline ? "API: ready" : "API: no key")
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundStyle(monitor.serverOnline ? .green : .red)
             }
             
@@ -85,53 +87,56 @@ struct StatusBarContentView: View {
                 }
             }
             
-            // Recent history section
+            // Recent history section (collapsed, show only 3)
             if !monitor.recentHistory.isEmpty {
                 Divider()
                 
-                Text("Recent")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                
-                ForEach(monitor.recentHistory.prefix(5)) { entry in
-                    historyRow(entry)
+                DisclosureGroup {
+                    ForEach(monitor.recentHistory.prefix(3)) { entry in
+                        historyRow(entry)
+                    }
+                } label: {
+                    Text("Recent (\(monitor.recentHistory.count))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
+                .font(.caption)
             }
             
             Divider()
             
             // Footer
             HStack {
-                Text("Refresh: 1s")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
                 Spacer()
                 
-                Button("Stop All") {
-                    monitor.stopAll()
+                HStack(spacing: 8) {
+                    Button("Stop All") {
+                        monitor.stopAll()
+                    }
+                    .buttonStyle(MenuBarButtonStyle())
+                    .disabled(monitor.speakingCount == 0 && monitor.totalQueuedItems == 0)
+                    
+                    Button("Settings") {
+                        openSettings()
+                    }
+                    .buttonStyle(MenuBarButtonStyle())
+                    
+                    Button("Quit") {
+                        NSApp.terminate(nil)
+                    }
+                    .buttonStyle(MenuBarButtonStyle())
                 }
-                .buttonStyle(.borderless)
-                .disabled(monitor.speakingCount == 0 && monitor.totalQueuedItems == 0)
-                
-                Button("Settings") {
-                    openSettings()
-                }
-                .buttonStyle(.borderless)
-                
-                Button("Quit") {
-                    NSApp.terminate(nil)
-                }
-                .buttonStyle(.borderless)
             }
             
             if let msg = monitor.lastMessage {
                 Text(msg)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
         .padding(12)
-        .frame(width: 380)
+        .frame(width: 360)
         .onAppear { monitor.start() }
         .onDisappear { monitor.stop() }
     }
@@ -154,40 +159,27 @@ struct StatusBarContentView: View {
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                     
-                    // CWD line
-                    if let cwd = session.cwd {
-                        Text(cwd)
+                    // Last spoken text (if any)
+                    if let text = session.currentText ?? session.lastSpokenText {
+                        Text("💬 " + trimmedText(text, maxLength: 45))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
                     
-                    // Current/last text (for voice activity)
-                    if let text = session.currentText ?? session.lastSpokenText {
-                        Text("💬 " + trimmedText(text, maxLength: 50))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
-                    
-                    // Metadata line
-                    HStack(spacing: 8) {
+                    // Metadata line: PID · voice · queued · last time
+                    HStack(spacing: 6) {
                         if let pid = session.pid {
                             Text("PID \(pid)")
                                 .font(.system(.caption2, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                        }
-                        
-                        if let tty = session.tty, tty != "??" {
-                            Text(tty)
-                                .font(.system(.caption2, design: .monospaced))
-                                .foregroundStyle(.secondary)
                         }
                         
                         if let voice = session.voice {
-                            Label(voice, systemImage: "waveform")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+                            HStack(spacing: 2) {
+                                Image(systemName: "waveform")
+                                Text(voice)
+                            }
+                            .font(.caption2)
                         }
                         
                         if session.queuedCount > 0 {
@@ -195,14 +187,13 @@ struct StatusBarContentView: View {
                                 .font(.caption2)
                                 .foregroundStyle(.orange)
                         }
+                        
+                        if (session.activity == .idle || session.activity == .waiting), let lastAt = session.lastSpokenAt {
+                            Text("· \(Self.relativeDateFormatter.localizedString(for: lastAt, relativeTo: Date()))")
+                                .font(.caption2)
+                        }
                     }
-                    
-                    // Last spoken time
-                    if (session.activity == .idle || session.activity == .waiting), let lastAt = session.lastSpokenAt {
-                        Text("last voice: \(Self.relativeDateFormatter.localizedString(for: lastAt, relativeTo: Date()))")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
+                    .foregroundStyle(.secondary)
                 }
                 
                 Spacer()
@@ -210,12 +201,18 @@ struct StatusBarContentView: View {
                 if session.pid != nil {
                     Text("Jump")
                         .font(.caption)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color.blue.opacity(0.15))
+                        )
                         .foregroundStyle(.blue)
                 }
             }
         }
         .buttonStyle(.plain)
-        .padding(.vertical, 4)
+        .padding(.vertical, 3)
     }
     
     @ViewBuilder
@@ -310,5 +307,30 @@ struct StatusBarIcon: View {
         tinted.isTemplate = false  // Not a template since we're applying custom colors
         
         return tinted
+    }
+}
+
+// MARK: - Custom Button Style
+
+struct MenuBarButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.caption.weight(.medium))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(configuration.isPressed 
+                        ? Color.accentColor.opacity(0.3) 
+                        : Color.accentColor.opacity(0.15))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.accentColor.opacity(0.3), lineWidth: 1)
+            )
+            .foregroundStyle(isEnabled ? Color.accentColor : .secondary)
+            .opacity(isEnabled ? 1.0 : 0.5)
     }
 }

@@ -418,7 +418,18 @@ final class RequestHistoryStore: ObservableObject {
         do {
             let data = try Data(contentsOf: historyFileURL)
             let decoded = try JSONDecoder().decode([RequestHistoryEntry].self, from: data)
-            entries = Array(decoded.prefix(maxEntries))
+            
+            // Clean up stale "playing" entries (from crashes or bugs)
+            let staleCutoff = Date().addingTimeInterval(-120)  // 2 minutes
+            let cleaned = decoded.prefix(maxEntries).map { entry -> RequestHistoryEntry in
+                if entry.status == .playing && entry.timestamp < staleCutoff {
+                    var fixed = entry
+                    fixed.status = .interrupted
+                    return fixed
+                }
+                return entry
+            }
+            entries = Array(cleaned)
         } catch {
             print("PiTalk: Failed to load request history: \(error)")
         }
@@ -719,9 +730,17 @@ final class SpeechPlaybackCoordinator {
 
         do {
             guard await waitUntilMicrophoneInactive(runNonce: runNonce) else {
+                // Interrupted by mic activity
+                finalStatus = .interrupted
+                RequestHistoryStore.shared.updateStatus(id: job.historyEntryId, to: finalStatus)
+                finishCurrent(runNonce: runNonce)
                 return
             }
             guard shouldContinue(runNonce: runNonce) else {
+                // Cancelled
+                finalStatus = .cancelled
+                RequestHistoryStore.shared.updateStatus(id: job.historyEntryId, to: finalStatus)
+                finishCurrent(runNonce: runNonce)
                 return
             }
 
