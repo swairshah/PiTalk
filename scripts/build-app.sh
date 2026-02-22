@@ -5,7 +5,7 @@ set -e
 cd "$(dirname "$0")/.."
 
 # Version - update this for releases
-VERSION="1.0.0"
+VERSION="1.0.2"
 
 echo "🔨 Building PiTalk.app v$VERSION..."
 
