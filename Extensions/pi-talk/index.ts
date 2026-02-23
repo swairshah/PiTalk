@@ -292,6 +292,9 @@ export default function (pi: ExtensionAPI) {
     currentSessionId = ctx.sessionManager.getSessionId();
     serverWarningShown = false;  // Reset for new session
 
+    // Show PID in status bar (used by PiTalk jump handler to identify panes)
+    ctx.ui.setStatus("pid", `↓${process.pid}`);
+
     const ready = await checkServer();
     if (ttsEnabled) {
       if (ready) {
