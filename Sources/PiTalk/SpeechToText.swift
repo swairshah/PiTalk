@@ -17,7 +17,7 @@ final class SpeechToText {
             completion(TranscriptionResult(
                 success: false,
                 text: nil,
-                error: "ElevenLabs API key not found. Set ELEVEN_API_KEY environment variable."
+                error: "ElevenLabs API key not found. Add it in settings or import from ~/.env."
             ))
             return
         }
@@ -113,19 +113,6 @@ final class SpeechToText {
     }
     
     private static func getApiKey() -> String? {
-        // Try environment variables first
-        if let key = ProcessInfo.processInfo.environment["ELEVEN_API_KEY"], !key.isEmpty {
-            return key
-        }
-        if let key = ProcessInfo.processInfo.environment["ELEVENLABS_API_KEY"], !key.isEmpty {
-            return key
-        }
-        
-        // Try UserDefaults (AppStorage)
-        if let key = UserDefaults.standard.string(forKey: "elevenLabsApiKey"), !key.isEmpty {
-            return key
-        }
-        
-        return nil
+        ElevenLabsApiKeyManager.resolvedKey()
     }
 }

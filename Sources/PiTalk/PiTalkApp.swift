@@ -84,6 +84,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Set shared instance for access from SwiftUI
         AppDelegate.shared = self
+
+        switch ElevenLabsApiKeyManager.bootstrapPersistedKeyIfNeeded() {
+        case .importedFromEnvironment:
+            debugLog("PiTalk: Imported ElevenLabs API key from process environment")
+        case .importedFromDotEnv:
+            debugLog("PiTalk: Imported ElevenLabs API key from ~/.env")
+        case .alreadyConfigured, .notFound:
+            break
+        }
         
         // Menu bar is now handled by SwiftUI MenuBarExtra
         setupGlobalShortcut()
@@ -955,13 +964,10 @@ final class SpeechPlaybackCoordinator {
     ]
     
     private func synthesize(job: SpeechJob) async throws -> Data {
-        // Get API key from environment or UserDefaults
-        guard let apiKey = ProcessInfo.processInfo.environment["ELEVEN_API_KEY"]
-            ?? ProcessInfo.processInfo.environment["ELEVENLABS_API_KEY"]
-            ?? UserDefaults.standard.string(forKey: "elevenLabsApiKey"),
-              !apiKey.isEmpty else {
+        // Get API key from environment, app settings, or ~/.env
+        guard let apiKey = ElevenLabsApiKeyManager.resolvedKey(), !apiKey.isEmpty else {
             throw NSError(domain: "PiTalk", code: 401, userInfo: [
-                NSLocalizedDescriptionKey: "ElevenLabs API key not found. Set ELEVEN_API_KEY environment variable or configure in settings."
+                NSLocalizedDescriptionKey: "ElevenLabs API key not found. Add it in settings or import it from ~/.env."
             ])
         }
         
@@ -1003,13 +1009,10 @@ final class SpeechPlaybackCoordinator {
     
     /// Streaming TTS - uses fast model and streaming API for lower latency
     private func synthesizeAndPlayStreaming(job: SpeechJob, runNonce: UUID) async throws {
-        // Get API key
-        guard let apiKey = ProcessInfo.processInfo.environment["ELEVEN_API_KEY"]
-            ?? ProcessInfo.processInfo.environment["ELEVENLABS_API_KEY"]
-            ?? UserDefaults.standard.string(forKey: "elevenLabsApiKey"),
-              !apiKey.isEmpty else {
+        // Get API key from environment, app settings, or ~/.env
+        guard let apiKey = ElevenLabsApiKeyManager.resolvedKey(), !apiKey.isEmpty else {
             throw NSError(domain: "PiTalk", code: 401, userInfo: [
-                NSLocalizedDescriptionKey: "ElevenLabs API key not found."
+                NSLocalizedDescriptionKey: "ElevenLabs API key not found. Add it in settings or import it from ~/.env."
             ])
         }
         
@@ -1769,6 +1772,23 @@ struct SettingsTabView: View {
     @AppStorage("showDockIcon") var showDockIcon = true
     @State private var isPreviewPlaying = false
     @State private var showApiKey = false
+    @State private var envImportMessage: String?
+    @State private var envImportMessageColor: Color = .secondary
+
+    private var trimmedStoredApiKey: String {
+        apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var effectiveApiKey: String? {
+        if !trimmedStoredApiKey.isEmpty {
+            return trimmedStoredApiKey
+        }
+        return ElevenLabsApiKeyManager.resolvedKey()
+    }
+
+    private var hasApiKey: Bool {
+        effectiveApiKey?.isEmpty == false
+    }
     
     // ElevenLabs voices - British & Scottish only
     let availableVoices = [
@@ -1778,6 +1798,12 @@ struct SettingsTabView: View {
     var body: some View {
         Form {
             Section("ElevenLabs API") {
+                if !hasApiKey {
+                    Text("Welcome! Add your ElevenLabs API key to start using PiTalk.")
+                        .font(.subheadline)
+                        .foregroundColor(.orange)
+                }
+
                 HStack {
                     if showApiKey {
                         TextField("API Key", text: $apiKey)
@@ -1791,18 +1817,35 @@ struct SettingsTabView: View {
                     }
                     .buttonStyle(.borderless)
                 }
-                
-                if apiKey.isEmpty {
-                    Text("Get your API key from elevenlabs.io")
+
+                HStack(spacing: 8) {
+                    Button("Import from ~/.env") {
+                        importApiKeyFromDotEnv()
+                    }
+                    .buttonStyle(.bordered)
+
+                    Text("Looks for ELEVEN_API_KEY or ELEVENLABS_API_KEY")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let envImportMessage {
+                    Text(envImportMessage)
                         .font(.caption)
-                        .foregroundColor(.orange)
-                } else {
+                        .foregroundStyle(envImportMessageColor)
+                }
+                
+                if hasApiKey {
                     Text("API key configured ✓")
                         .font(.caption)
                         .foregroundColor(.green)
+                } else {
+                    Text("Get your API key from elevenlabs.io")
+                        .font(.caption)
+                        .foregroundColor(.orange)
                 }
                 
-                Text("Or set ELEVEN_API_KEY environment variable")
+                Text("Tip: Finder-launched apps don't inherit shell env vars, so importing from ~/.env is recommended.")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
@@ -1821,7 +1864,7 @@ struct SettingsTabView: View {
                     Button(isPreviewPlaying ? "Playing…" : "Preview") {
                         previewVoice(voice)
                     }
-                    .disabled(isPreviewPlaying || apiKey.isEmpty)
+                    .disabled(isPreviewPlaying || !hasApiKey)
                 }
             }
 
@@ -1854,9 +1897,28 @@ struct SettingsTabView: View {
             appDelegate.updateDockIconVisibility()
         }
     }
+
+    func importApiKeyFromDotEnv() {
+        switch ElevenLabsApiKeyManager.importFromDotEnv(overwriteExisting: true) {
+        case .imported:
+            apiKey = UserDefaults.standard.string(forKey: ElevenLabsApiKeyManager.userDefaultsKey) ?? apiKey
+            envImportMessage = "Imported API key from ~/.env"
+            envImportMessageColor = .green
+        case .missingFile:
+            envImportMessage = "No ~/.env file found"
+            envImportMessageColor = .orange
+        case .keyNotFound:
+            envImportMessage = "No ELEVEN_API_KEY or ELEVENLABS_API_KEY found in ~/.env"
+            envImportMessageColor = .orange
+        case .skippedExisting:
+            envImportMessage = "API key already configured"
+            envImportMessageColor = .secondary
+        }
+    }
     
     func previewVoice(_ voiceName: String) {
         guard !isPreviewPlaying else { return }
+        guard let apiKey = effectiveApiKey, !apiKey.isEmpty else { return }
         isPreviewPlaying = true
         
         let text = "Hi, this is \(voiceName.capitalized). I'm ready to help you with your coding projects."

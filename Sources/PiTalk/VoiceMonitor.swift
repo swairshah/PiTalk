@@ -573,11 +573,8 @@ final class VoiceMonitor: ObservableObject {
     }
     
     private func checkServerHealth() {
-        // Check if ElevenLabs API key is configured
-        let hasApiKey = ProcessInfo.processInfo.environment["ELEVEN_API_KEY"] != nil 
-            || ProcessInfo.processInfo.environment["ELEVENLABS_API_KEY"] != nil
-            || (UserDefaults.standard.string(forKey: "elevenLabsApiKey")?.isEmpty == false)
-        serverOnline = hasApiKey
+        // Check if ElevenLabs API key is configured from env, app settings, or ~/.env
+        serverOnline = ElevenLabsApiKeyManager.resolvedKey() != nil
     }
     
     private func normalizedAppName(_ sourceApp: String?) -> String {
