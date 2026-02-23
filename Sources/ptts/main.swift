@@ -8,7 +8,6 @@ import PiTalkClient
 ///   ptts "Hello world"                    # Enqueue speech in PiTalk broker
 ///   ptts --voice alba "Hello"             # Use specific voice
 ///   echo "Hello" | ptts                   # Read from stdin
-///   ptts --raw "Hello" > audio.pcm        # Output raw PCM
 ///   ptts --list-voices                     # List available voices
 ///   ptts --stop                            # Stop current/queued speech
 
@@ -19,7 +18,6 @@ struct CLI {
     var brokerPort: Int = 18081
     var host: String = "127.0.0.1"
     var sessionId: String?
-    var rawOutput: Bool = false
     var listVoices: Bool = false
     var stopSpeech: Bool = false
     var showHelp: Bool = false
@@ -61,7 +59,6 @@ func printUsage() {
                               Broker queue port (default: 18081)
         -H, --host <HOST>     Server host (default: 127.0.0.1)
         -S, --session-id <ID> Session identifier attached to broker requests
-        -r, --raw             Output raw PCM audio (s16le, 24kHz, mono) to stdout
         -q, --quiet           Suppress status messages
         -l, --list-voices     List available voices
         -s, --stop            Stop current/queued speech
@@ -71,12 +68,11 @@ func printUsage() {
         ptts "Hello, world!"
         ptts -v alba "Good morning"
         echo "Long text from file" | ptts
-        ptts --raw "Hello" > audio.pcm
         ptts --session-id pi-session-abc123 "Hello from a specific session"
-        ptts --raw "Hello" | ffplay -f s16le -ar 24000 -ch_layout mono -nodisp -autoexit -i pipe:0
 
     VOICES:
-        alba, marius, javert, fantine, cosette, eponine, azelma
+        ally, dorothy, lily, alice, dave, joseph
+        george, emma, oliver, sophia, charlotte, william, jack, olivia, isla, liam
 
     NOTE:
         Requires PiTalk.app to be running.
@@ -129,8 +125,6 @@ func parseArgs() -> CLI {
             if i < args.count {
                 cli.sessionId = args[i]
             }
-        case "-r", "--raw":
-            cli.rawOutput = true
         case "-q", "--quiet":
             cli.quiet = true
         default:
@@ -283,16 +277,6 @@ func enqueueViaBroker(host: String, brokerPort: Int, text: String, voice: String
     return response
 }
 
-func outputRaw(client: TTSClient, text: String, voice: String?) async throws {
-    // Raw output requires explicit voice since it bypasses the broker
-    let resolvedVoice = voice ?? "fantine"
-    let stream = client.streamSpeech(text: text, voice: resolvedVoice)
-
-    for try await chunk in stream {
-        FileHandle.standardOutput.write(chunk)
-    }
-}
-
 func main() async {
     let cli = parseArgs()
 
@@ -319,17 +303,8 @@ func main() async {
             }
             exit(0)
         } catch {
-            // Compatibility fallback for older PiTalk instances without broker
-            do {
-                try await client.stop()
-                if !cli.quiet {
-                    FileHandle.standardError.write("Sent stop signal to TTS server.\n".data(using: .utf8)!)
-                }
-                exit(0)
-            } catch {
-                FileHandle.standardError.write("Error stopping speech: \(error.localizedDescription)\n".data(using: .utf8)!)
-                exit(1)
-            }
+            FileHandle.standardError.write("Error stopping speech: \(error.localizedDescription)\n".data(using: .utf8)!)
+            exit(1)
         }
     }
 
@@ -369,11 +344,6 @@ func main() async {
 
     // Speak
     do {
-        if cli.rawOutput {
-            try await outputRaw(client: client, text: text, voice: cli.voice)
-            exit(0)
-        }
-
         try await checkBrokerHealth(host: cli.host, brokerPort: cli.brokerPort)
         let response = try await enqueueViaBroker(host: cli.host, brokerPort: cli.brokerPort, text: text, voice: cli.voice, sessionId: cli.sessionId)
         if !cli.quiet {
