@@ -573,8 +573,13 @@ final class VoiceMonitor: ObservableObject {
     }
     
     private func checkServerHealth() {
-        // Check if ElevenLabs API key is configured from env, app settings, or ~/.env
-        serverOnline = ElevenLabsApiKeyManager.resolvedKey() != nil
+        // Check API key availability for the currently selected TTS provider
+        switch SpeechPlaybackCoordinator.currentProvider {
+        case .elevenlabs:
+            serverOnline = ElevenLabsApiKeyManager.resolvedKey() != nil
+        case .google:
+            serverOnline = GoogleApiKeyManager.resolvedKey() != nil
+        }
     }
     
     private func normalizedAppName(_ sourceApp: String?) -> String {
