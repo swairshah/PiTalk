@@ -390,17 +390,22 @@ final class RequestHistoryStore: ObservableObject {
     static let shared = RequestHistoryStore()
 
     @Published private(set) var entries: [RequestHistoryEntry] = []
+
     private let maxEntries = 250
     private let historyFileURL: URL
+    private let storageQueue = DispatchQueue(label: "pitalk.request-history.store")
+    private var storageEntries: [RequestHistoryEntry] = []
+    private var pendingPersistWorkItem: DispatchWorkItem?
+    private let persistDebounceSeconds: TimeInterval = 0.08
 
     private init() {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let loquiDir = appSupport.appendingPathComponent("PiTalk", isDirectory: true)
         historyFileURL = loquiDir.appendingPathComponent("request-history.json")
-        _ = syncOnMain { () -> Bool in
-            loadFromDisk()
-            return true
-        }
+
+        let initial = loadFromDisk()
+        storageEntries = initial
+        publishSnapshot(initial)
     }
 
     @discardableResult
@@ -415,15 +420,16 @@ final class RequestHistoryStore: ObservableObject {
             status: .queued
         )
 
-        _ = syncOnMain { () -> Bool in
-            entries.insert(entry, at: 0)
-            if entries.count > maxEntries {
-                entries.removeLast(entries.count - maxEntries)
+        let snapshot = storageQueue.sync { () -> [RequestHistoryEntry] in
+            storageEntries.insert(entry, at: 0)
+            if storageEntries.count > maxEntries {
+                storageEntries.removeLast(storageEntries.count - maxEntries)
             }
-            persist()
-            return true
+            schedulePersistLocked()
+            return storageEntries
         }
 
+        publishSnapshot(snapshot)
         return entry.id
     }
 
@@ -432,67 +438,93 @@ final class RequestHistoryStore: ObservableObject {
         to newStatus: RequestPlaybackStatus,
         unlessCurrentIn blockedStatuses: Set<RequestPlaybackStatus> = []
     ) {
-        _ = syncOnMain { () -> Bool in
-            guard let index = entries.firstIndex(where: { $0.id == id }) else {
-                return false
+        let snapshot = storageQueue.sync { () -> [RequestHistoryEntry]? in
+            guard let index = storageEntries.firstIndex(where: { $0.id == id }) else {
+                return nil
             }
 
-            let current = entries[index].status
+            let current = storageEntries[index].status
             if blockedStatuses.contains(current) {
-                return false
+                return nil
             }
 
-            if current != newStatus {
-                entries[index].status = newStatus
-                persist()
+            guard current != newStatus else {
+                return nil
             }
-            return true
+
+            storageEntries[index].status = newStatus
+            schedulePersistLocked()
+            return storageEntries
+        }
+
+        if let snapshot {
+            publishSnapshot(snapshot)
         }
     }
 
     func clear() {
-        _ = syncOnMain { () -> Bool in
-            entries.removeAll()
-            persist()
-            return true
+        let snapshot = storageQueue.sync { () -> [RequestHistoryEntry] in
+            storageEntries.removeAll()
+            schedulePersistLocked()
+            return storageEntries
         }
+
+        publishSnapshot(snapshot)
     }
-    
+
     /// Cancel all entries that are currently queued or playing (stale entries)
     func cancelAllPending() {
-        _ = syncOnMain { () -> Bool in
+        let snapshot = storageQueue.sync { () -> [RequestHistoryEntry]? in
             var changed = false
-            for i in entries.indices {
-                if entries[i].status == .queued || entries[i].status == .playing {
-                    entries[i].status = .cancelled
+            for i in storageEntries.indices {
+                if storageEntries[i].status == .queued || storageEntries[i].status == .playing {
+                    storageEntries[i].status = .cancelled
                     changed = true
                 }
             }
-            if changed {
-                persist()
-            }
-            return true
+
+            guard changed else { return nil }
+            schedulePersistLocked()
+            return storageEntries
+        }
+
+        if let snapshot {
+            publishSnapshot(snapshot)
         }
     }
 
-    private func syncOnMain<T>(_ work: () -> T) -> T {
+    private func schedulePersistLocked() {
+        dispatchPrecondition(condition: .onQueue(storageQueue))
+
+        pendingPersistWorkItem?.cancel()
+        let snapshot = storageEntries
+        let work = DispatchWorkItem { [weak self] in
+            self?.persist(snapshot)
+        }
+        pendingPersistWorkItem = work
+        storageQueue.asyncAfter(deadline: .now() + persistDebounceSeconds, execute: work)
+    }
+
+    private func publishSnapshot(_ snapshot: [RequestHistoryEntry]) {
         if Thread.isMainThread {
-            return work()
+            entries = snapshot
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.entries = snapshot
+            }
         }
-
-        return DispatchQueue.main.sync(execute: work)
     }
 
-    private func loadFromDisk() {
-        guard FileManager.default.fileExists(atPath: historyFileURL.path) else { return }
+    private func loadFromDisk() -> [RequestHistoryEntry] {
+        guard FileManager.default.fileExists(atPath: historyFileURL.path) else { return [] }
 
         do {
             let data = try Data(contentsOf: historyFileURL)
             let decoded = try JSONDecoder().decode([RequestHistoryEntry].self, from: data)
-            
+
             // Clean up stale "playing" and "queued" entries (from crashes or bugs)
             let staleCutoff = Date().addingTimeInterval(-120)  // 2 minutes
-            let cleaned = decoded.prefix(maxEntries).map { entry -> RequestHistoryEntry in
+            return decoded.prefix(maxEntries).map { entry -> RequestHistoryEntry in
                 if (entry.status == .playing || entry.status == .queued) && entry.timestamp < staleCutoff {
                     var fixed = entry
                     fixed.status = entry.status == .playing ? .interrupted : .cancelled
@@ -500,13 +532,13 @@ final class RequestHistoryStore: ObservableObject {
                 }
                 return entry
             }
-            entries = Array(cleaned)
         } catch {
             print("PiTalk: Failed to load request history: \(error)")
+            return []
         }
     }
 
-    private func persist() {
+    private func persist(_ entries: [RequestHistoryEntry]) {
         do {
             let directory = historyFileURL.deletingLastPathComponent()
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
