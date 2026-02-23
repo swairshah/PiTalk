@@ -826,23 +826,34 @@ final class SpeechPlaybackCoordinator {
         
         let hasProcess = currentProcess != nil
         let isRunning = currentProcess?.isRunning == true
-        debugLog("PiTalk: Coordinator mic state: \(active ? "ACTIVE" : "INACTIVE"), hasProcess=\(hasProcess), isRunning=\(isRunning)")
+        debugLog("PiTalk: Coordinator mic state: \(active ? "ACTIVE" : "INACTIVE"), hasProcess=\(hasProcess), isRunning=\(isRunning), isPlaying=\(isPlaying)")
 
         if active {
+            // Check if we're actively playing OR in the middle of synthesizing (isPlaying but process not yet started)
             let activelyPlaying = currentProcess?.isRunning == true
-
-            // Requirement: if mic starts while voice is already playing, cancel all queued work at that moment.
-            guard activelyPlaying else { 
-                debugLog("PiTalk: Mic active but no playback running, skipping stop")
+            let synthesizing = isPlaying && currentProcess == nil
+            
+            // Requirement: if mic starts while voice is playing/synthesizing, cancel all queued work at that moment.
+            guard activelyPlaying || synthesizing else { 
+                debugLog("PiTalk: Mic active but no playback/synthesis running, skipping stop")
                 return 
             }
-            debugLog("PiTalk: Mic active, stopping playback!")
+            debugLog("PiTalk: Mic active, stopping playback! (activelyPlaying=\(activelyPlaying), synthesizing=\(synthesizing))")
 
-            let pendingIds = allPendingHistoryIdsLocked()
             let activeId = currentJobHistoryId
-
-            queuesByKey.removeAll()
-            queueOrder.removeAll()
+            let interruptedQueueKey = currentQueueKey
+            
+            // Only cancel messages from the currently playing app/session, pause others
+            var cancelledIds: [UUID] = []
+            if let key = interruptedQueueKey {
+                // Get pending IDs from the interrupted queue only
+                cancelledIds = queuesByKey[key]?.map(\.historyEntryId) ?? []
+                // Remove only this queue
+                queuesByKey.removeValue(forKey: key)
+                queueOrder.removeAll { $0 == key }
+                debugLog("PiTalk: Cancelled queue '\(key)' with \(cancelledIds.count) pending, \(queuesByKey.count) other queues paused")
+            }
+            
             // Keep voice assignments so this queue key keeps the same voice after interruption.
             terminateCurrentProcessLocked()
             currentJobHistoryId = nil
@@ -850,7 +861,7 @@ final class SpeechPlaybackCoordinator {
             currentRunNonce = nil
             isPlaying = false
 
-            for id in pendingIds {
+            for id in cancelledIds {
                 RequestHistoryStore.shared.updateStatus(id: id, to: .cancelled)
             }
             if let activeId {
