@@ -187,9 +187,20 @@ final class JumpHandler {
             }
         }
         
-        // Step 4: Ghostty CGWindowList-based tab switching
-        // This is the main path for Ghostty - handles tab switching properly
-        NSLog("JumpHandler: %@", "Step 4 check: focused=\(focused), terminalApp=\(terminalApp ?? "nil"), muxInfo=\(muxInfo != nil)")
+        // Step 4: Ghostty PID-based pane focus (for raw splits, no mux)
+        // This is the most reliable method when pi shows PID in status bar
+        if !focused && terminalApp == "Ghostty" && muxInfo == nil {
+            NSLog("JumpHandler: %@", "Step 4 - trying PID-based Ghostty pane focus for PID \(pid)")
+            if focusGhosttyPaneByPID(pid) {
+                focused = true
+                focusedApp = "Ghostty"
+                NSLog("JumpHandler: %@", "Step 4 - PID-based focus succeeded")
+            }
+        }
+        
+        // Step 5: Ghostty CGWindowList-based tab switching
+        // Fallback for when PID search fails or for mux scenarios
+        NSLog("JumpHandler: %@", "Step 5 check: focused=\(focused), terminalApp=\(terminalApp ?? "nil"), muxInfo=\(muxInfo != nil)")
         if !focused && (terminalApp == "Ghostty" || muxInfo != nil) {
             // IMPORTANT: zellij sessions often share one Ghostty tab (eg. "dev1").
             // Prioritize per-session hints (cwd/tty) over mux session name to avoid always matching "dev1".
@@ -232,17 +243,17 @@ final class JumpHandler {
             }
         }
         
-        // Step 5: If tmux, switch to the correct pane
+        // Step 6: If tmux, switch to the correct pane
         if focused && muxInfo?.type == "tmux" && tty != "??" {
             selectTmuxPaneByTTY(tty)
         }
         
-        // Step 5b: If zellij, deterministically switch to tab containing the pi pane for this cwd
+        // Step 6b: If zellij, deterministically switch to tab containing the pi pane for this cwd
         if focused && muxInfo?.type == "zellij", let zellijSession = muxInfo?.session {
             selectZellijTabForSession(session: zellijSession, cwd: cwd, tty: tty)
         }
         
-        // Step 6: Non-terminal fallback (eg. app-hosted pi via RPC/subprocess)
+        // Step 7: Non-terminal fallback (eg. app-hosted pi via RPC/subprocess)
         // IMPORTANT: Do NOT use this for terminal/mux sessions, or we'll report false positives.
         let looksLikeTerminalSession = (tty != "??") || (muxInfo != nil) || (terminalApp != nil)
         if !focused && !looksLikeTerminalSession {
@@ -934,6 +945,161 @@ final class JumpHandler {
         
         // Do not claim success unless we actually found/switched to the requested tab.
         return (false, "activated Ghostty, but could not find exact tab '\(targetName)'")
+    }
+    
+    // MARK: - Ghostty PID-based Pane Focus
+    
+    /// Focus a Ghostty split pane by searching for PID in the status bar area.
+    /// Returns true if the pane was found and focused.
+    private func focusGhosttyPaneByPID(_ pid: Int) -> Bool {
+        NSLog("JumpHandler: focusGhosttyPaneByPID starting for PID %d", pid)
+        
+        guard let ghosttyApp = NSWorkspace.shared.runningApplications.first(where: {
+            $0.bundleIdentifier == "com.mitchellh.ghostty"
+        }) else {
+            NSLog("JumpHandler: Ghostty not running")
+            return false
+        }
+        
+        // Activate Ghostty first
+        ghosttyApp.activate(options: [.activateIgnoringOtherApps])
+        Thread.sleep(forTimeInterval: 0.05)
+        
+        let appRef = AXUIElementCreateApplication(ghosttyApp.processIdentifier)
+        
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appRef, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let windows = windowsRef as? [AXUIElement],
+              !windows.isEmpty else {
+            NSLog("JumpHandler: Could not get Ghostty windows")
+            return false
+        }
+        
+        let searchPattern = "↓\(pid) "  // Status bar format: ↓{PID} (with trailing space)
+        
+        // Get tab group from first window
+        guard let window = windows.first else { return false }
+        
+        var childrenRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+              let children = childrenRef as? [AXUIElement] else {
+            return false
+        }
+        
+        // Find tab group
+        var tabGroup: AXUIElement?
+        for child in children {
+            var roleRef: CFTypeRef?
+            AXUIElementCopyAttributeValue(child, kAXRoleAttribute as CFString, &roleRef)
+            if (roleRef as? String) == "AXTabGroup" {
+                tabGroup = child
+                break
+            }
+        }
+        
+        guard let tabGroup else {
+            NSLog("JumpHandler: Could not find tab group")
+            return false
+        }
+        
+        // Get all tabs
+        var tabsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(tabGroup, kAXChildrenAttribute as CFString, &tabsRef) == .success,
+              let tabs = tabsRef as? [AXUIElement] else {
+            return false
+        }
+        
+        let radioButtons = tabs.filter { tab in
+            var roleRef: CFTypeRef?
+            AXUIElementCopyAttributeValue(tab, kAXRoleAttribute as CFString, &roleRef)
+            return (roleRef as? String) == "AXRadioButton"
+        }
+        
+        NSLog("JumpHandler: Found %d tabs to search", radioButtons.count)
+        
+        // Helper to get all text areas from window and check for PID
+        func searchCurrentTabForPID() -> AXUIElement? {
+            var contentRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(window, kAXChildrenAttribute as CFString, &contentRef) == .success,
+                  let content = contentRef as? [AXUIElement] else {
+                return nil
+            }
+            
+            // Find all text areas recursively
+            var textAreas: [AXUIElement] = []
+            func findTextAreas(in element: AXUIElement, depth: Int = 0) {
+                guard depth < 10 else { return }
+                
+                var roleRef: CFTypeRef?
+                AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef)
+                if (roleRef as? String) == "AXTextArea" {
+                    textAreas.append(element)
+                }
+                
+                var childrenRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+                   let children = childrenRef as? [AXUIElement] {
+                    for child in children {
+                        findTextAreas(in: child, depth: depth + 1)
+                    }
+                }
+            }
+            
+            for child in content {
+                findTextAreas(in: child)
+            }
+            
+            // Check each text area's last 200 chars for the PID pattern
+            for textArea in textAreas {
+                var valueRef: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(textArea, kAXValueAttribute as CFString, &valueRef) == .success,
+                      let value = valueRef as? String else {
+                    continue
+                }
+                
+                // Only check last 200 chars (status bar area)
+                let checkRange = value.count > 200 ? String(value.suffix(200)) : value
+                if checkRange.contains(searchPattern) {
+                    return textArea
+                }
+            }
+            
+            return nil
+        }
+        
+        // Check current tab first
+        if let textArea = searchCurrentTabForPID() {
+            _ = AXUIElementSetAttributeValue(textArea, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+            NSLog("JumpHandler: Found PID %d in current tab", pid)
+            return true
+        }
+        
+        // Cycle through tabs using keyboard (more reliable than clicking)
+        for i in 0..<radioButtons.count {
+            // Send Cmd+Shift+] to switch to next tab
+            let src = CGEventSource(stateID: .hidSystemState)
+            
+            // Key code 30 is ] 
+            if let keyDown = CGEvent(keyboardEventSource: src, virtualKey: 30, keyDown: true) {
+                keyDown.flags = [.maskCommand, .maskShift]
+                keyDown.post(tap: .cghidEventTap)
+            }
+            if let keyUp = CGEvent(keyboardEventSource: src, virtualKey: 30, keyDown: false) {
+                keyUp.flags = [.maskCommand, .maskShift]
+                keyUp.post(tap: .cghidEventTap)
+            }
+            
+            Thread.sleep(forTimeInterval: 0.08)
+            
+            if let textArea = searchCurrentTabForPID() {
+                _ = AXUIElementSetAttributeValue(textArea, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+                NSLog("JumpHandler: Found PID %d after %d tab switches", pid, i + 1)
+                return true
+            }
+        }
+        
+        NSLog("JumpHandler: PID %d not found in any Ghostty tab/pane", pid)
+        return false
     }
     
     // MARK: - tmux Pane Selection
