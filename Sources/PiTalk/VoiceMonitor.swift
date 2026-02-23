@@ -94,6 +94,8 @@ final class VoiceMonitor: ObservableObject {
     @Published private(set) var recentHistory: [RequestHistoryEntry] = []
     
     private var timer: Timer?
+    private var refreshTask: Task<Void, Never>?
+    private var refreshRevision: UInt64 = 0
     private let historyStore = RequestHistoryStore.shared
     private let activeSessionWindow: TimeInterval = 5 * 60  // 5 minutes
     
@@ -165,6 +167,7 @@ final class VoiceMonitor: ObservableObject {
     }
     
     deinit {
+        refreshTask?.cancel()
         if let observer = micObserver {
             NotificationCenter.default.removeObserver(observer)
         }
@@ -183,50 +186,97 @@ final class VoiceMonitor: ObservableObject {
     func stop() {
         timer?.invalidate()
         timer = nil
+        refreshTask?.cancel()
+        refreshTask = nil
     }
     
     func refresh() {
-        // Read pi telemetry for accurate status
-        let telemetryInstances = readPiTelemetry()
-        
-        // Build sessions from history entries + telemetry
         let entries = historyStore.entries
-        let newSessions = buildSessions(from: entries, telemetry: telemetryInstances)
-        
-        // If mic is active, preserve current order to avoid UI jumping while recording
-        if isMicActive && !sessions.isEmpty {
+        let isMicActive = self.isMicActive
+        let currentSessions = self.sessions
+        let activeSessionWindow = self.activeSessionWindow
+
+        refreshRevision &+= 1
+        let revision = refreshRevision
+        refreshTask?.cancel()
+        refreshTask = Task(priority: .utility) { [weak self, entries, isMicActive, currentSessions, activeSessionWindow] in
+            let refreshResult = await Task.detached(priority: .utility) {
+                VoiceMonitor.computeRefreshResult(
+                    entries: entries,
+                    isMicActive: isMicActive,
+                    currentSessions: currentSessions,
+                    activeSessionWindow: activeSessionWindow
+                )
+            }.value
+
+            if Task.isCancelled { return }
+            guard let self else { return }
+            guard self.refreshRevision == revision else { return }
+
+            self.sessions = refreshResult.sessions
+            self.summary = refreshResult.summary
+            self.recentHistory = refreshResult.recentHistory
+            self.checkServerHealth()
+        }
+    }
+
+    private struct RefreshResult {
+        let sessions: [VoiceSession]
+        let summary: VoiceSummary
+        let recentHistory: [RequestHistoryEntry]
+    }
+
+    nonisolated private static func computeRefreshResult(
+        entries: [RequestHistoryEntry],
+        isMicActive: Bool,
+        currentSessions: [VoiceSession],
+        activeSessionWindow: TimeInterval
+    ) -> RefreshResult {
+        let telemetryInstances = readPiTelemetry()
+        let daemonAgents = DaemonClient.status()?.agents ?? []
+        let newSessions = buildSessions(
+            from: entries,
+            telemetry: telemetryInstances,
+            daemonAgents: daemonAgents,
+            activeSessionWindow: activeSessionWindow
+        )
+
+        let orderedSessions: [VoiceSession]
+        if isMicActive && !currentSessions.isEmpty {
             // Keep current order but update session data
             var updatedSessions: [VoiceSession] = []
             let newSessionsById = Dictionary(uniqueKeysWithValues: newSessions.map { ($0.id, $0) })
-            
+
             // First, keep existing sessions in their current order (with updated data)
-            for existing in sessions {
+            for existing in currentSessions {
                 if let updated = newSessionsById[existing.id] {
                     updatedSessions.append(updated)
                 }
             }
-            
+
             // Then add any new sessions at the end
             for new in newSessions {
                 if !updatedSessions.contains(where: { $0.id == new.id }) {
                     updatedSessions.append(new)
                 }
             }
-            
-            sessions = updatedSessions
+
+            orderedSessions = updatedSessions
         } else {
-            sessions = newSessions
+            orderedSessions = newSessions
         }
-        summary = buildSummary(from: sessions)
-        
+
         // Get recent history (last 10 completed items)
-        recentHistory = Array(entries
+        let recentHistory = Array(entries
             .filter { !$0.status.isInQueue }
             .sorted { $0.timestamp > $1.timestamp }
             .prefix(10))
-        
-        // Check server status
-        checkServerHealth()
+
+        return RefreshResult(
+            sessions: orderedSessions,
+            summary: buildSummary(from: orderedSessions),
+            recentHistory: recentHistory
+        )
     }
     
     // MARK: - Telemetry Reading
@@ -240,7 +290,7 @@ final class VoiceMonitor: ObservableObject {
         let contextPercent: Double?
     }
     
-    private func readPiTelemetry() -> [PiTelemetryInstance] {
+    nonisolated private static func readPiTelemetry() -> [PiTelemetryInstance] {
         let telemetryDir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".pi/agent/telemetry/instances")
         
@@ -315,7 +365,7 @@ final class VoiceMonitor: ObservableObject {
         return instances
     }
     
-    private func mapTelemetryActivity(_ state: [String: Any]?) -> VoiceActivity {
+    nonisolated private static func mapTelemetryActivity(_ state: [String: Any]?) -> VoiceActivity {
         guard let state = state else { return .idle }
         
         // Check activity field first
@@ -385,12 +435,15 @@ final class VoiceMonitor: ObservableObject {
         }
     }
     
-    private func buildSessions(from entries: [RequestHistoryEntry], telemetry: [PiTelemetryInstance]) -> [VoiceSession] {
+    nonisolated private static func buildSessions(
+        from entries: [RequestHistoryEntry],
+        telemetry: [PiTelemetryInstance],
+        daemonAgents: [DaemonClient.AgentState],
+        activeSessionWindow: TimeInterval
+    ) -> [VoiceSession] {
         var sessions: [VoiceSession] = []
         var seenPids = Set<Int>()
         
-        // Get daemon status for TTY/mux info
-        let daemonAgents = DaemonClient.status()?.agents ?? []
         let agentsByPid: [Int32: DaemonClient.AgentState] = Dictionary(uniqueKeysWithValues: daemonAgents.map { ($0.pid, $0) })
         
         // First, create sessions from pi telemetry (accurate status)
@@ -530,7 +583,7 @@ final class VoiceMonitor: ObservableObject {
         }
     }
     
-    private func buildSummary(from sessions: [VoiceSession]) -> VoiceSummary {
+    nonisolated private static func buildSummary(from sessions: [VoiceSession]) -> VoiceSummary {
         let total = sessions.count
         let speaking = sessions.filter { $0.activity == .speaking }.count
         let running = sessions.filter { $0.activity == .running }.count
@@ -582,12 +635,12 @@ final class VoiceMonitor: ObservableObject {
         }
     }
     
-    private func normalizedAppName(_ sourceApp: String?) -> String {
+    nonisolated private static func normalizedAppName(_ sourceApp: String?) -> String {
         let trimmed = sourceApp?.trimmingCharacters(in: .whitespacesAndNewlines)
         return (trimmed?.isEmpty == false) ? trimmed! : "Unknown"
     }
     
-    private func normalizedSessionId(_ sessionId: String?) -> String? {
+    nonisolated private static func normalizedSessionId(_ sessionId: String?) -> String? {
         let trimmed = sessionId?.trimmingCharacters(in: .whitespacesAndNewlines)
         return (trimmed?.isEmpty == false) ? trimmed : nil
     }
