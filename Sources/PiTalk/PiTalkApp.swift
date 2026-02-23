@@ -2402,6 +2402,7 @@ struct HistoryView: View {
     @State private var searchText = ""
     @State private var selectedAppFilter = Self.allAppsToken
     @State private var selectedSessionFilter = Self.allSessionsToken
+    @State private var derivedState = DerivedState.empty
 
     private static let allAppsToken = "__all_apps__"
     private static let allSessionsToken = "__all_sessions__"
@@ -2414,71 +2415,24 @@ struct HistoryView: View {
         return formatter
     }()
 
-    private var availableApps: [String] {
-        let apps = Set(historyStore.entries.map { normalizedAppName($0.sourceApp) })
-        return apps.sorted()
-    }
+    private struct DerivedState {
+        let totalEntryCount: Int
+        let appFilterOptions: [String]
+        let sessionFilterOptions: [String]
+        let isFiltering: Bool
+        let filteredEntries: [RequestHistoryEntry]
+        let queueEntries: [RequestHistoryEntry]
+        let completedEntries: [RequestHistoryEntry]
 
-    private var availableSessions: [String] {
-        let sessions = Set(historyStore.entries.compactMap { normalizedSessionId($0.sessionId) })
-        return sessions.sorted()
-    }
-
-    private var appFilterOptions: [String] {
-        [Self.allAppsToken] + availableApps
-    }
-
-    private var sessionFilterOptions: [String] {
-        var options = [Self.allSessionsToken]
-        if historyStore.entries.contains(where: { normalizedSessionId($0.sessionId) == nil }) {
-            options.append(Self.noSessionToken)
-        }
-        options.append(contentsOf: availableSessions)
-        return options
-    }
-
-    private var isFiltering: Bool {
-        !searchText.isEmpty || selectedAppFilter != Self.allAppsToken || selectedSessionFilter != Self.allSessionsToken
-    }
-
-    private var filteredEntries: [RequestHistoryEntry] {
-        historyStore.entries.filter { entry in
-            if !searchText.isEmpty {
-                let searchLower = searchText.lowercased()
-                let textMatches = entry.text.lowercased().contains(searchLower)
-                let appMatches = normalizedAppName(entry.sourceApp).lowercased().contains(searchLower)
-                let sessionMatches = (entry.sessionId?.lowercased().contains(searchLower) ?? false)
-                if !textMatches && !appMatches && !sessionMatches {
-                    return false
-                }
-            }
-
-            if selectedAppFilter != Self.allAppsToken,
-               normalizedAppName(entry.sourceApp) != selectedAppFilter {
-                return false
-            }
-
-            if selectedSessionFilter == Self.noSessionToken {
-                return normalizedSessionId(entry.sessionId) == nil
-            }
-
-            if selectedSessionFilter != Self.allSessionsToken,
-               normalizedSessionId(entry.sessionId) != selectedSessionFilter {
-                return false
-            }
-
-            return true
-        }
-    }
-
-    private var queueEntries: [RequestHistoryEntry] {
-        filteredEntries
-            .filter { $0.status.isInQueue }
-            .sorted { $0.timestamp < $1.timestamp }
-    }
-
-    private var completedEntries: [RequestHistoryEntry] {
-        filteredEntries.filter { !$0.status.isInQueue }
+        static let empty = DerivedState(
+            totalEntryCount: 0,
+            appFilterOptions: [HistoryView.allAppsToken],
+            sessionFilterOptions: [HistoryView.allSessionsToken],
+            isFiltering: false,
+            filteredEntries: [],
+            queueEntries: [],
+            completedEntries: []
+        )
     }
 
     var body: some View {
@@ -2489,12 +2443,12 @@ struct HistoryView: View {
                         Text("History")
                             .font(.title2)
                             .fontWeight(.semibold)
-                        Text("\(queueEntries.count) queued · \(completedEntries.count) completed")
+                        Text("\(derivedState.queueEntries.count) queued · \(derivedState.completedEntries.count) completed")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
                     Spacer()
-                    if isFiltering {
+                    if derivedState.isFiltering {
                         Button("Reset Filters") {
                             searchText = ""
                             selectedAppFilter = Self.allAppsToken
@@ -2510,7 +2464,7 @@ struct HistoryView: View {
                             .foregroundColor(.secondary)
                     }
                     .buttonStyle(.plain)
-                    .disabled(historyStore.entries.isEmpty)
+                    .disabled(derivedState.totalEntryCount == 0)
                     .help("Clear all history")
                 }
 
@@ -2529,7 +2483,7 @@ struct HistoryView: View {
 
                 HStack(spacing: 8) {
                     Picker("App", selection: $selectedAppFilter) {
-                        ForEach(appFilterOptions, id: \.self) { option in
+                        ForEach(derivedState.appFilterOptions, id: \.self) { option in
                             Text(appFilterLabel(option)).tag(option)
                         }
                     }
@@ -2537,7 +2491,7 @@ struct HistoryView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                     Picker("Session", selection: $selectedSessionFilter) {
-                        ForEach(sessionFilterOptions, id: \.self) { option in
+                        ForEach(derivedState.sessionFilterOptions, id: \.self) { option in
                             Text(sessionFilterLabel(option)).tag(option)
                         }
                     }
@@ -2550,13 +2504,13 @@ struct HistoryView: View {
 
             Divider()
 
-            if historyStore.entries.isEmpty {
+            if derivedState.totalEntryCount == 0 {
                 emptyState(
                     icon: "bubble.left.and.bubble.right",
                     title: "No requests yet",
                     subtitle: "Speech requests will appear here"
                 )
-            } else if filteredEntries.isEmpty {
+            } else if derivedState.filteredEntries.isEmpty {
                 emptyState(
                     icon: "magnifyingglass",
                     title: "No matches",
@@ -2564,9 +2518,9 @@ struct HistoryView: View {
                 )
             } else {
                 List {
-                    if !queueEntries.isEmpty {
+                    if !derivedState.queueEntries.isEmpty {
                         Section {
-                            ForEach(queueEntries) { entry in
+                            ForEach(derivedState.queueEntries) { entry in
                                 entryRow(entry)
                             }
                         } header: {
@@ -2577,7 +2531,7 @@ struct HistoryView: View {
                     }
 
                     Section {
-                        ForEach(completedEntries) { entry in
+                        ForEach(derivedState.completedEntries) { entry in
                             entryRow(entry)
                         }
                     } header: {
@@ -2589,15 +2543,84 @@ struct HistoryView: View {
                 .listStyle(.inset)
             }
         }
-        .onChange(of: appFilterOptions) { options in
-            if selectedAppFilter != Self.allAppsToken && !options.contains(selectedAppFilter) {
-                selectedAppFilter = Self.allAppsToken
-            }
+        .onAppear { recomputeDerivedState() }
+        .onReceive(historyStore.$entries) { _ in recomputeDerivedState() }
+        .onChange(of: searchText) { _ in recomputeDerivedState() }
+        .onChange(of: selectedAppFilter) { _ in recomputeDerivedState() }
+        .onChange(of: selectedSessionFilter) { _ in recomputeDerivedState() }
+    }
+
+    private func recomputeDerivedState() {
+        let entries = historyStore.entries
+
+        let appOptions = [Self.allAppsToken] + Set(entries.map { normalizedAppName($0.sourceApp) }).sorted()
+
+        var sessionOptions = [Self.allSessionsToken]
+        if entries.contains(where: { normalizedSessionId($0.sessionId) == nil }) {
+            sessionOptions.append(Self.noSessionToken)
         }
-        .onChange(of: sessionFilterOptions) { options in
-            if selectedSessionFilter != Self.allSessionsToken && !options.contains(selectedSessionFilter) {
-                selectedSessionFilter = Self.allSessionsToken
+        sessionOptions.append(contentsOf: Set(entries.compactMap { normalizedSessionId($0.sessionId) }).sorted())
+
+        var resolvedAppFilter = selectedAppFilter
+        var resolvedSessionFilter = selectedSessionFilter
+
+        if resolvedAppFilter != Self.allAppsToken && !appOptions.contains(resolvedAppFilter) {
+            resolvedAppFilter = Self.allAppsToken
+        }
+        if resolvedSessionFilter != Self.allSessionsToken && !sessionOptions.contains(resolvedSessionFilter) {
+            resolvedSessionFilter = Self.allSessionsToken
+        }
+
+        let searchLower = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        let filteredEntries = entries.filter { entry in
+            if !searchLower.isEmpty {
+                let textMatches = entry.text.lowercased().contains(searchLower)
+                let appMatches = normalizedAppName(entry.sourceApp).lowercased().contains(searchLower)
+                let sessionMatches = (entry.sessionId?.lowercased().contains(searchLower) ?? false)
+                if !textMatches && !appMatches && !sessionMatches {
+                    return false
+                }
             }
+
+            if resolvedAppFilter != Self.allAppsToken,
+               normalizedAppName(entry.sourceApp) != resolvedAppFilter {
+                return false
+            }
+
+            if resolvedSessionFilter == Self.noSessionToken {
+                return normalizedSessionId(entry.sessionId) == nil
+            }
+
+            if resolvedSessionFilter != Self.allSessionsToken,
+               normalizedSessionId(entry.sessionId) != resolvedSessionFilter {
+                return false
+            }
+
+            return true
+        }
+
+        let queueEntries = filteredEntries
+            .filter { $0.status.isInQueue }
+            .sorted { $0.timestamp < $1.timestamp }
+        let completedEntries = filteredEntries.filter { !$0.status.isInQueue }
+        let isFiltering = !searchLower.isEmpty || resolvedAppFilter != Self.allAppsToken || resolvedSessionFilter != Self.allSessionsToken
+
+        derivedState = DerivedState(
+            totalEntryCount: entries.count,
+            appFilterOptions: appOptions,
+            sessionFilterOptions: sessionOptions,
+            isFiltering: isFiltering,
+            filteredEntries: filteredEntries,
+            queueEntries: queueEntries,
+            completedEntries: completedEntries
+        )
+
+        if selectedAppFilter != resolvedAppFilter {
+            selectedAppFilter = resolvedAppFilter
+        }
+        if selectedSessionFilter != resolvedSessionFilter {
+            selectedSessionFilter = resolvedSessionFilter
         }
     }
 
