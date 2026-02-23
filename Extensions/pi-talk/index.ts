@@ -22,6 +22,12 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import net from "node:net";
 import process from "node:process";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+
+// Inbox configuration for receiving messages from external apps
+const INBOX_BASE_DIR = path.join(os.homedir(), ".pi", "agent", "pitalk-inbox");
 
 // Configuration - matches Loqui defaults
 const TTS_PORT = 18080;
@@ -113,29 +119,122 @@ export default function (pi: ExtensionAPI) {
   let currentVoice = "auto";  // Current TTS voice ("auto" = let Loqui assign per-session)
   let currentSessionId: string | undefined;
 
-  // Streaming state
-  let voiceBuffer = "";
-  let processedUpTo = 0;
+  // Streaming parser state
+  let lastFullText = "";
+  let parserBuffer = "";
+  let insideVoice = false;
+  let speakBuffer = "";
+
+  // Inbox watcher state
+  let inboxWatcher: fs.FSWatcher | null = null;
+  let inboxDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  const myPid = process.pid;
+  const myInboxDir = path.join(INBOX_BASE_DIR, String(myPid));
+
+  // Ensure inbox directory exists
+  function ensureInboxDir() {
+    try {
+      fs.mkdirSync(myInboxDir, { recursive: true });
+    } catch {
+      // Ignore errors
+    }
+  }
+
+  // Process all pending message files in inbox
+  function processInboxMessages() {
+    try {
+      const files = fs.readdirSync(myInboxDir).filter(f => f.endsWith(".json")).sort();
+      for (const file of files) {
+        const filePath = path.join(myInboxDir, file);
+        try {
+          const content = fs.readFileSync(filePath, "utf-8");
+          const msg = JSON.parse(content);
+          
+          if (msg.text) {
+            // Inject the message into pi
+            pi.sendMessage(
+              { customType: "voice_input", content: msg.text, display: true },
+              { triggerTurn: true }
+            );
+          }
+          
+          // Delete the file after processing
+          fs.unlinkSync(filePath);
+        } catch {
+          // Ignore individual file errors, try to delete anyway
+          try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+        }
+      }
+    } catch {
+      // Ignore read errors
+    }
+  }
+
+  // Start watching the inbox directory
+  function startInboxWatcher() {
+    if (inboxWatcher) return;
+    
+    ensureInboxDir();
+    processInboxMessages(); // Process any pending messages
+    
+    try {
+      inboxWatcher = fs.watch(myInboxDir, () => {
+        // Debounce rapid events
+        if (inboxDebounceTimer) clearTimeout(inboxDebounceTimer);
+        inboxDebounceTimer = setTimeout(() => {
+          inboxDebounceTimer = null;
+          processInboxMessages();
+        }, 50);
+      });
+      
+      inboxWatcher.on("error", () => {
+        stopInboxWatcher();
+      });
+    } catch {
+      // Ignore watcher errors
+    }
+  }
+
+  // Stop the inbox watcher
+  function stopInboxWatcher() {
+    if (inboxDebounceTimer) {
+      clearTimeout(inboxDebounceTimer);
+      inboxDebounceTimer = null;
+    }
+    if (inboxWatcher) {
+      inboxWatcher.close();
+      inboxWatcher = null;
+    }
+  }
 
   function sendBrokerCommand(command: BrokerRequest, timeoutMs = 2500): Promise<BrokerResponse> {
     return new Promise((resolve, reject) => {
-      const socket = net.createConnection({ host: TTS_HOST, port: BROKER_PORT });
-      socket.setEncoding("utf8");
-
       let settled = false;
       let buffer = "";
+      let timeout: ReturnType<typeof setTimeout>;
 
       const finish = (fn: () => void) => {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
-        fn();
+        try {
+          fn();
+        } catch {
+          // Ignore finish callback errors
+        }
       };
 
-      const timeout = setTimeout(() => {
+      // Attach error handler immediately after creating socket to avoid unhandled connection errors.
+      const socket = net.createConnection({ host: TTS_HOST, port: BROKER_PORT });
+      socket.on("error", () => {
+        finish(() => reject(new Error("Connection failed")));
+      });
+      socket.setEncoding("utf8");
+
+      timeout = setTimeout(() => {
         finish(() => {
           socket.destroy();
-          reject(new Error("Loqui broker timeout"));
+          reject(new Error("Broker timeout"));
         });
       }, timeoutMs);
 
@@ -164,10 +263,6 @@ export default function (pi: ExtensionAPI) {
         });
       });
 
-      socket.on("error", (err) => {
-        finish(() => reject(err));
-      });
-
       socket.on("end", () => {
         if (settled) return;
         const line = buffer.trim();
@@ -189,36 +284,25 @@ export default function (pi: ExtensionAPI) {
   // Check if Loqui server + broker are running
   async function checkServer(): Promise<boolean> {
     try {
-      const res = await fetch(`http://${TTS_HOST}:${TTS_PORT}/health`);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 1500);
+
+      const res = await fetch(`http://${TTS_HOST}:${TTS_PORT}/health`, {
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeoutId));
+
       if (!res.ok) {
         serverReady = false;
         return false;
       }
 
-      const broker = await sendBrokerCommand({ type: "health" });
+      const broker = await sendBrokerCommand({ type: "health" }, 1500);
       serverReady = broker.ok === true;
       return serverReady;
     } catch {
       serverReady = false;
       return false;
     }
-  }
-
-  // Extract <voice> tags from text
-  function extractVoiceTags(text: string, fromIndex: number): { content: string; endIndex: number }[] {
-    const results: { content: string; endIndex: number }[] = [];
-    const regex = /<voice>([\s\S]*?)<\/voice>/g;
-    regex.lastIndex = fromIndex;
-
-    let match;
-    while ((match = regex.exec(text)) !== null) {
-      results.push({
-        content: match[1].trim(),
-        endIndex: match.index + match[0].length,
-      });
-    }
-
-    return results;
   }
 
   // Strip any accidental nested markup from voice content (e.g. <emphasis>)
@@ -228,6 +312,9 @@ export default function (pi: ExtensionAPI) {
 
   async function enqueueSpeech(text: string) {
     if (!text.trim()) return;
+
+    // Skip silently when server is known down to avoid log spam.
+    if (!serverReady) return;
 
     try {
       const response = await sendBrokerCommand({
@@ -242,15 +329,105 @@ export default function (pi: ExtensionAPI) {
       if (!response.ok) {
         console.log("[TTS] Broker rejected speech:", response.error ?? "unknown error");
       }
-    } catch (err) {
-      console.log("[TTS] Broker error:", err);
+    } catch {
+      // Connection likely failed; mark not ready and fail silently.
       serverReady = false;
     }
   }
 
-  // Process streaming text for voice tags
+  function longestTagPrefixSuffix(text: string, tag: string): number {
+    const max = Math.min(text.length, tag.length - 1);
+    for (let len = max; len > 0; len--) {
+      if (text.endsWith(tag.slice(0, len))) return len;
+    }
+    return 0;
+  }
+
+  function flushSpeakBuffer(force = false) {
+    if (!speakBuffer.trim()) return;
+
+    if (force) {
+      const chunk = sanitizeVoiceContent(speakBuffer);
+      speakBuffer = "";
+      if (chunk) void enqueueSpeech(chunk);
+      return;
+    }
+
+    // Prefer sentence-ish chunks for better prosody while still low-latency.
+    let splitAt = -1;
+    for (let i = 0; i < speakBuffer.length; i++) {
+      const ch = speakBuffer[i];
+      const next = speakBuffer[i + 1] ?? "";
+      if ((ch === "." || ch === "!" || ch === "?" || ch === "…") && (!next || /[\s"'\)\]]/.test(next))) {
+        splitAt = i + 1;
+      }
+    }
+
+    if (splitAt > 0) {
+      const chunk = sanitizeVoiceContent(speakBuffer.slice(0, splitAt));
+      speakBuffer = speakBuffer.slice(splitAt).replace(/^\s+/, "");
+      if (chunk) void enqueueSpeech(chunk);
+      return;
+    }
+
+    // Fallback: flush long chunks at a word boundary.
+    if (speakBuffer.length >= 140) {
+      const preferred = 110;
+      let split = speakBuffer.lastIndexOf(" ", preferred);
+      if (split < 60) split = preferred;
+      const chunk = sanitizeVoiceContent(speakBuffer.slice(0, split));
+      speakBuffer = speakBuffer.slice(split).replace(/^\s+/, "");
+      if (chunk) void enqueueSpeech(chunk);
+    }
+  }
+
+  function streamVoiceText(text: string, forceFlush = false) {
+    if (text) speakBuffer += text;
+    flushSpeakBuffer(forceFlush);
+  }
+
+  function processDelta(delta: string) {
+    if (!delta) return;
+
+    parserBuffer += delta;
+
+    while (parserBuffer.length > 0) {
+      if (!insideVoice) {
+        const openIdx = parserBuffer.indexOf("<voice>");
+        if (openIdx >= 0) {
+          parserBuffer = parserBuffer.slice(openIdx + "<voice>".length);
+          insideVoice = true;
+          continue;
+        }
+
+        const keep = longestTagPrefixSuffix(parserBuffer, "<voice>");
+        parserBuffer = keep > 0 ? parserBuffer.slice(-keep) : "";
+        return;
+      }
+
+      const closeIdx = parserBuffer.indexOf("</voice>");
+      if (closeIdx >= 0) {
+        const voiceText = parserBuffer.slice(0, closeIdx);
+        streamVoiceText(voiceText, true);
+        parserBuffer = parserBuffer.slice(closeIdx + "</voice>".length);
+        insideVoice = false;
+        continue;
+      }
+
+      const keep = longestTagPrefixSuffix(parserBuffer, "</voice>");
+      const emitLen = parserBuffer.length - keep;
+      if (emitLen > 0) {
+        const textToSpeak = parserBuffer.slice(0, emitLen);
+        streamVoiceText(textToSpeak, false);
+      }
+      parserBuffer = keep > 0 ? parserBuffer.slice(-keep) : "";
+      return;
+    }
+  }
+
+  // Process streaming text for voice tags (start speaking as soon as <voice> opens)
   async function processStreamingText(fullText: string) {
-    if (!ttsEnabled) return;
+    if (!ttsEnabled || ttsMuted) return;
 
     // Retry server check if not ready
     if (!serverReady) {
@@ -258,24 +435,34 @@ export default function (pi: ExtensionAPI) {
       if (!serverReady) return;
     }
 
-    voiceBuffer = fullText;
-
-    // Find complete <voice> tags we haven't processed yet
-    const voiceTags = extractVoiceTags(voiceBuffer, processedUpTo);
-
-    for (const tag of voiceTags) {
-      const clean = sanitizeVoiceContent(tag.content);
-      if (clean) {
-        // Fire-and-forget to avoid blocking token stream updates
-        void enqueueSpeech(clean);
-      }
-      processedUpTo = tag.endIndex;
+    let delta = "";
+    if (fullText.startsWith(lastFullText)) {
+      delta = fullText.slice(lastFullText.length);
+    } else {
+      // Stream was re-written (rare). Reset parser to avoid corrupt state.
+      parserBuffer = "";
+      insideVoice = false;
+      speakBuffer = "";
+      delta = fullText;
     }
+
+    lastFullText = fullText;
+    processDelta(delta);
   }
 
-  function resetStreamingState() {
-    voiceBuffer = "";
-    processedUpTo = 0;
+  function resetStreamingState(flushRemainder = false) {
+    if (flushRemainder) {
+      if (insideVoice && parserBuffer) {
+        streamVoiceText(parserBuffer, true);
+      } else {
+        flushSpeakBuffer(true);
+      }
+    }
+
+    lastFullText = "";
+    parserBuffer = "";
+    insideVoice = false;
+    speakBuffer = "";
   }
 
   // Inject voice prompt into system prompt (only if TTS enabled)
@@ -294,6 +481,9 @@ export default function (pi: ExtensionAPI) {
 
     // Show PID in status bar (used by PiTalk jump handler to identify panes)
     ctx.ui.setStatus("pid", `πid${process.pid}`);
+
+    // Start inbox watcher for receiving messages from external apps
+    startInboxWatcher();
 
     const ready = await checkServer();
     if (ttsEnabled) {
@@ -319,11 +509,15 @@ export default function (pi: ExtensionAPI) {
     currentSessionId = ctx.sessionManager.getSessionId();
   });
 
-  pi.on("message_start", async (event) => {
+  pi.on("message_start", async (event, ctx) => {
     if (event.message.role === "assistant") {
       resetStreamingState();
       // Re-check server in case it was started/stopped
+      const wasReady = serverReady;
       await checkServer();
+      if (wasReady !== serverReady) {
+        updateStatus(ctx);
+      }
     }
   });
 
@@ -343,7 +537,18 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("message_end", async (event) => {
     if (event.message.role === "assistant") {
-      resetStreamingState();
+      resetStreamingState(true);
+    }
+  });
+
+  // Cleanup on session shutdown
+  pi.on("session_shutdown", async () => {
+    stopInboxWatcher();
+    // Try to remove inbox directory
+    try {
+      fs.rmSync(myInboxDir, { recursive: true, force: true });
+    } catch {
+      // Ignore cleanup errors
     }
   });
 

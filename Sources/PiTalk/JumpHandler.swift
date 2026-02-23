@@ -1059,7 +1059,10 @@ final class JumpHandler {
                 findTextAreas(in: child)
             }
             
-            // Check each text area's last 100 chars for the PID pattern
+            NSLog("JumpHandler: Searching %d text areas for PID %d", textAreas.count, pid)
+            
+            // Check each text area for the PID pattern
+            // Note: Ghostty only exposes text content for the focused pane via AX API
             for textArea in textAreas {
                 var valueRef: CFTypeRef?
                 guard AXUIElementCopyAttributeValue(textArea, kAXValueAttribute as CFString, &valueRef) == .success,
@@ -1067,11 +1070,12 @@ final class JumpHandler {
                     continue
                 }
                 
-                // Only check last 100 chars (status bar is at the very bottom)
-                let checkRange = value.count > 100 ? String(value.suffix(100)) : value
+                // Check last 200 chars (status bar area)
+                let checkRange = value.count > 200 ? String(value.suffix(200)) : value
                 
                 if checkRange.contains(searchPattern) {
-                    NSLog("JumpHandler: Found PID %d in pane", pid)
+                    // Focus and return
+                    AXUIElementSetAttributeValue(textArea, kAXFocusedAttribute as CFString, kCFBooleanTrue)
                     return textArea
                 }
             }
