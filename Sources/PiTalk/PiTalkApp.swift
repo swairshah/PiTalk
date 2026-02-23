@@ -2770,11 +2770,10 @@ struct HelpView: View {
 
                 helpSection(title: "HTTP API", icon: "network") {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Direct synthesis endpoint:")
+                        Text("Health endpoint:")
                             .font(.callout)
                             .foregroundColor(.secondary)
-                        CodeRow(code: "POST http://127.0.0.1:18080/stream", description: "Stream PCM audio")
-                        CodeRow(code: "{\"text\":\"Hello\",\"voice\":\"fantine\"}", description: "JSON body")
+                        CodeRow(code: "GET http://127.0.0.1:18080/health", description: "Check PiTalk app health")
                     }
                 }
 
