@@ -112,15 +112,33 @@ struct StatusBarContentView: View {
             
             Divider()
             
-            // Sessions list
+            // Sessions list (show max 8 in menu bar)
             if monitor.sessions.isEmpty {
                 Text("No active voice sessions")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.vertical, 8)
             } else {
-                ForEach(monitor.sessions) { session in
+                let maxVisible = 8
+                let visibleSessions = Array(monitor.sessions.prefix(maxVisible))
+                let hiddenCount = monitor.sessions.count - visibleSessions.count
+                
+                ForEach(visibleSessions) { session in
                     sessionRow(session)
+                }
+                
+                if hiddenCount > 0 {
+                    Button(action: { openSettings() }) {
+                        HStack {
+                            Image(systemName: "ellipsis.circle")
+                            Text("\(hiddenCount) more session\(hiddenCount == 1 ? "" : "s")...")
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
             
