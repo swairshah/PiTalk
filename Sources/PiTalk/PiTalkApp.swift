@@ -203,16 +203,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             broker.start()
             localBroker = broker
             debugLog("PiTalk: Local broker listening on 127.0.0.1:\(brokerPort)")
-            
-            // Also start HTTP health server on 18080 (pi-tts extension expects this)
-            if healthServer == nil {
-                let server = HealthHTTPServer(port: 18080)
+        } catch {
+            print("PiTalk: Failed to start local broker: \(error)")
+            return
+        }
+
+        // Also start HTTP health server on 18080 (pi-tts extension expects this)
+        if healthServer == nil {
+            do {
+                let server = try HealthHTTPServer(port: 18080)
                 server.start()
                 healthServer = server
                 debugLog("PiTalk: Health server listening on 127.0.0.1:18080")
+            } catch {
+                print("PiTalk: Failed to start health server: \(error)")
             }
-        } catch {
-            print("PiTalk: Failed to start local broker: \(error)")
         }
     }
     
@@ -3016,11 +3021,19 @@ final class HealthHTTPServer {
     private let listener: NWListener
     private let queue = DispatchQueue(label: "pitalk.health.server")
     
-    init(port: Int) {
+    init(port: Int) throws {
+        guard let nwPort = NWEndpoint.Port(rawValue: UInt16(port)) else {
+            throw NSError(
+                domain: "PiTalk",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid health server port: \(port)"]
+            )
+        }
+
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
-        
-        self.listener = try! NWListener(using: params, on: NWEndpoint.Port(rawValue: UInt16(port))!)
+
+        self.listener = try NWListener(using: params, on: nwPort)
     }
     
     func start() {
