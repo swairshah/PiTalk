@@ -975,7 +975,9 @@ final class JumpHandler {
             return false
         }
         
-        let searchPattern = "↓\(pid) "  // Status bar format: ↓{PID} (with trailing space)
+        // Status bar format: πid{PID} followed by space (unique prefix for reliable matching)
+        // The trailing space ensures we don't match log output that prints the pattern
+        let searchPattern = "πid\(pid) "
         
         // Get tab group from first window
         guard let window = windows.first else { return false }
@@ -1017,11 +1019,13 @@ final class JumpHandler {
         
         NSLog("JumpHandler: Found %d tabs to search", radioButtons.count)
         
-        // Helper to get all text areas from window and check for PID
-        func searchCurrentTabForPID() -> AXUIElement? {
-            var contentRef: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(window, kAXChildrenAttribute as CFString, &contentRef) == .success,
-                  let content = contentRef as? [AXUIElement] else {
+        // Helper to get all text areas from current window and check for PID
+        func searchCurrentWindowForPID() -> AXUIElement? {
+            // Re-query the window to get fresh content after tab switch
+            var freshWindowsRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(appRef, kAXWindowsAttribute as CFString, &freshWindowsRef) == .success,
+                  let freshWindows = freshWindowsRef as? [AXUIElement],
+                  let currentWindow = freshWindows.first else {
                 return nil
             }
             
@@ -1045,11 +1049,17 @@ final class JumpHandler {
                 }
             }
             
+            var contentRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(currentWindow, kAXChildrenAttribute as CFString, &contentRef) == .success,
+                  let content = contentRef as? [AXUIElement] else {
+                return nil
+            }
+            
             for child in content {
                 findTextAreas(in: child)
             }
             
-            // Check each text area's last 200 chars for the PID pattern
+            // Check each text area's last 100 chars for the PID pattern
             for textArea in textAreas {
                 var valueRef: CFTypeRef?
                 guard AXUIElementCopyAttributeValue(textArea, kAXValueAttribute as CFString, &valueRef) == .success,
@@ -1057,9 +1067,11 @@ final class JumpHandler {
                     continue
                 }
                 
-                // Only check last 200 chars (status bar area)
-                let checkRange = value.count > 200 ? String(value.suffix(200)) : value
+                // Only check last 100 chars (status bar is at the very bottom)
+                let checkRange = value.count > 100 ? String(value.suffix(100)) : value
+                
                 if checkRange.contains(searchPattern) {
+                    NSLog("JumpHandler: Found PID %d in pane", pid)
                     return textArea
                 }
             }
@@ -1067,33 +1079,34 @@ final class JumpHandler {
             return nil
         }
         
+        // Focus a text area using AX API
+        func focusTextArea(_ textArea: AXUIElement) -> Bool {
+            let result = AXUIElementSetAttributeValue(textArea, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+            NSLog("JumpHandler: Focus result: %d", result.rawValue)
+            return result == .success
+        }
+        
         // Check current tab first
-        if let textArea = searchCurrentTabForPID() {
-            _ = AXUIElementSetAttributeValue(textArea, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        if let textArea = searchCurrentWindowForPID() {
+            _ = focusTextArea(textArea)
             NSLog("JumpHandler: Found PID %d in current tab", pid)
             return true
         }
         
-        // Cycle through tabs using keyboard (more reliable than clicking)
-        for i in 0..<radioButtons.count {
-            // Send Cmd+Shift+] to switch to next tab
-            let src = CGEventSource(stateID: .hidSystemState)
-            
-            // Key code 30 is ] 
-            if let keyDown = CGEvent(keyboardEventSource: src, virtualKey: 30, keyDown: true) {
-                keyDown.flags = [.maskCommand, .maskShift]
-                keyDown.post(tap: .cghidEventTap)
-            }
-            if let keyUp = CGEvent(keyboardEventSource: src, virtualKey: 30, keyDown: false) {
-                keyUp.flags = [.maskCommand, .maskShift]
-                keyUp.post(tap: .cghidEventTap)
+        // Click through each tab using AX API (avoids global keyboard events)
+        for (i, tab) in radioButtons.enumerated() {
+            // Click the tab
+            let result = AXUIElementPerformAction(tab, kAXPressAction as CFString)
+            if result != .success {
+                NSLog("JumpHandler: Failed to click tab %d: %d", i, result.rawValue)
+                continue
             }
             
-            Thread.sleep(forTimeInterval: 0.08)
+            Thread.sleep(forTimeInterval: 0.1)  // Slightly longer delay for content to update
             
-            if let textArea = searchCurrentTabForPID() {
-                _ = AXUIElementSetAttributeValue(textArea, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-                NSLog("JumpHandler: Found PID %d after %d tab switches", pid, i + 1)
+            if let textArea = searchCurrentWindowForPID() {
+                _ = focusTextArea(textArea)
+                NSLog("JumpHandler: Found PID %d in tab %d", pid, i)
                 return true
             }
         }
