@@ -51,7 +51,7 @@ Queue key is:
 Rules:
 - Missing session IDs are normalized to a shared `none` session.
 - Each queue key has its own FIFO queue.
-- Scheduler runs queues fairly in round-robin order.
+- Scheduler drains the current queue key before moving to the next queue key.
 
 ## Voice assignment behavior
 
