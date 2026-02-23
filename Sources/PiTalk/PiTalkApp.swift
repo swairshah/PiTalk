@@ -94,6 +94,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             break
         }
         
+        switch GoogleApiKeyManager.bootstrapPersistedKeyIfNeeded() {
+        case .importedFromEnvironment:
+            debugLog("PiTalk: Imported Google TTS API key from process environment")
+        case .importedFromDotEnv:
+            debugLog("PiTalk: Imported Google TTS API key from ~/.env")
+        case .alreadyConfigured, .notFound:
+            break
+        }
+        
         // Menu bar is now handled by SwiftUI MenuBarExtra
         setupGlobalShortcut()
         updateDockIconVisibility()
@@ -709,8 +718,15 @@ final class SpeechPlaybackCoordinator {
     }
 
     // Auto voice assignment for queues that don't specify voice.
-    // Using ElevenLabs voices
-    private let autoVoicePool = ["ally", "dorothy", "lily", "alice", "dave", "joseph"]
+    // Uses the voice pool for the current TTS provider
+    private var autoVoicePool: [String] {
+        switch SpeechPlaybackCoordinator.currentProvider {
+        case .elevenlabs:
+            return SpeechPlaybackCoordinator.elevenLabsVoicePool
+        case .google:
+            return SpeechPlaybackCoordinator.googleVoicePool
+        }
+    }
     private var autoVoiceByQueueKey: [String: String] = [:]
     private var autoVoiceCycleIndex = 0
 
@@ -950,6 +966,23 @@ final class SpeechPlaybackCoordinator {
         }
     }
 
+    // TTS Provider selection
+    enum TTSProvider: String, CaseIterable {
+        case elevenlabs = "elevenlabs"
+        case google = "google"
+        
+        var displayName: String {
+            switch self {
+            case .elevenlabs: return "ElevenLabs"
+            case .google: return "Google Cloud"
+            }
+        }
+    }
+    
+    static var currentProvider: TTSProvider {
+        TTSProvider(rawValue: UserDefaults.standard.string(forKey: "ttsProvider") ?? "elevenlabs") ?? .elevenlabs
+    }
+    
     // ElevenLabs voice ID mapping - British & Scottish voices only
     private static let elevenLabsVoices: [String: String] = [
         // Preferred voices (first in pool)
@@ -963,7 +996,39 @@ final class SpeechPlaybackCoordinator {
         "joseph": "Zlb1dXrM653N07WRdFW3",      // Joseph - British, middle-aged news reporter
     ]
     
+    // Google Cloud TTS voices - British & Australian
+    // Format: display name -> (voice name, language code)
+    private static let googleVoices: [String: (voiceName: String, languageCode: String)] = [
+        // British - Studio (highest quality)
+        "george": ("en-GB-Studio-B", "en-GB"),      // British male, studio quality
+        "emma": ("en-GB-Studio-C", "en-GB"),        // British female, studio quality
+        
+        // British - Neural2 (high quality)
+        "oliver": ("en-GB-Neural2-B", "en-GB"),     // British male
+        "sophia": ("en-GB-Neural2-A", "en-GB"),     // British female
+        "charlotte": ("en-GB-Neural2-C", "en-GB"),  // British female
+        "william": ("en-GB-Neural2-D", "en-GB"),    // British male
+        
+        // Australian - Neural2
+        "jack": ("en-AU-Neural2-B", "en-AU"),       // Australian male
+        "olivia": ("en-AU-Neural2-A", "en-AU"),     // Australian female
+        "isla": ("en-AU-Neural2-C", "en-AU"),       // Australian female
+        "liam": ("en-AU-Neural2-D", "en-AU"),       // Australian male
+    ]
+    
+    static let googleVoicePool = ["george", "emma", "oliver", "sophia", "jack", "olivia"]
+    static let elevenLabsVoicePool = ["ally", "dorothy", "lily", "alice", "dave", "joseph"]
+    
     private func synthesize(job: SpeechJob) async throws -> Data {
+        switch Self.currentProvider {
+        case .elevenlabs:
+            return try await synthesizeWithElevenLabs(job: job)
+        case .google:
+            return try await synthesizeWithGoogle(job: job)
+        }
+    }
+    
+    private func synthesizeWithElevenLabs(job: SpeechJob) async throws -> Data {
         // Get API key from environment, app settings, or ~/.env
         guard let apiKey = ElevenLabsApiKeyManager.resolvedKey(), !apiKey.isEmpty else {
             throw NSError(domain: "PiTalk", code: 401, userInfo: [
@@ -1007,8 +1072,124 @@ final class SpeechPlaybackCoordinator {
         return data
     }
     
+    private func synthesizeWithGoogle(job: SpeechJob) async throws -> Data {
+        guard let apiKey = GoogleApiKeyManager.resolvedKey(), !apiKey.isEmpty else {
+            throw NSError(domain: "PiTalk", code: 401, userInfo: [
+                NSLocalizedDescriptionKey: "Google Cloud API key not found. Add it in settings or import it from ~/.env."
+            ])
+        }
+        
+        // Map voice name to Google voice (default to "george")
+        let voiceConfig = Self.googleVoices[job.voice.lowercased()] ?? Self.googleVoices["george"] ?? ("en-GB-Studio-B", "en-GB")
+        
+        let url = URL(string: "https://texttospeech.googleapis.com/v1/text:synthesize?key=\(apiKey)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        
+        // Get speech speed from settings (default 1.0)
+        let rawSpeed = UserDefaults.standard.object(forKey: "speechSpeed") as? Double ?? 1.0
+        let speed = (rawSpeed * 100).rounded() / 100
+        
+        let body: [String: Any] = [
+            "input": ["text": job.text],
+            "voice": [
+                "languageCode": voiceConfig.languageCode,
+                "name": voiceConfig.voiceName
+            ],
+            "audioConfig": [
+                "audioEncoding": "MP3",
+                "speakingRate": speed,
+                "pitch": 0
+            ]
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw NSError(domain: "PiTalk", code: 500, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
+        }
+        
+        guard httpResponse.statusCode == 200 else {
+            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
+            throw NSError(domain: "PiTalk", code: httpResponse.statusCode, userInfo: [
+                NSLocalizedDescriptionKey: "Google TTS API error (\(httpResponse.statusCode)): \(errorMessage)"
+            ])
+        }
+        
+        // Google returns JSON with base64-encoded audio
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let audioContentBase64 = json["audioContent"] as? String,
+              let audioData = Data(base64Encoded: audioContentBase64) else {
+            throw NSError(domain: "PiTalk", code: 500, userInfo: [
+                NSLocalizedDescriptionKey: "Failed to decode Google TTS response"
+            ])
+        }
+        
+        return audioData
+    }
+    
     /// Streaming TTS - uses fast model and streaming API for lower latency
+    /// For ElevenLabs: uses streaming API. For Google: falls back to non-streaming.
     private func synthesizeAndPlayStreaming(job: SpeechJob, runNonce: UUID) async throws {
+        switch Self.currentProvider {
+        case .elevenlabs:
+            try await synthesizeAndPlayStreamingElevenLabs(job: job, runNonce: runNonce)
+        case .google:
+            // Google doesn't have a simple REST streaming API, so use non-streaming
+            try await synthesizeAndPlayGoogle(job: job, runNonce: runNonce)
+        }
+    }
+    
+    /// Google TTS - non-streaming (Google REST API doesn't support streaming)
+    private func synthesizeAndPlayGoogle(job: SpeechJob, runNonce: UUID) async throws {
+        guard let ffplayPath = findFFPlayPath() else {
+            throw NSError(domain: "PiTalk", code: 404, userInfo: [
+                NSLocalizedDescriptionKey: "ffplay not found. Install with: brew install ffmpeg"
+            ])
+        }
+        
+        // Synthesize the audio
+        let audioData = try await synthesizeWithGoogle(job: job)
+        
+        // Check if we should still continue
+        if !shouldContinue(runNonce: runNonce) { return }
+        
+        // Write to temp file and play
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pitalk-google-\(UUID().uuidString).mp3")
+        try audioData.write(to: tempURL)
+        
+        defer {
+            try? FileManager.default.removeItem(at: tempURL)
+        }
+        
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: ffplayPath)
+        process.arguments = [
+            "-nodisp",
+            "-autoexit",
+            "-loglevel", "quiet",
+            tempURL.path
+        ]
+        
+        try process.run()
+        
+        queue.sync {
+            self.currentProcess = process
+        }
+        
+        // Wait for ffplay to finish
+        await withCheckedContinuation { continuation in
+            process.terminationHandler = { _ in
+                continuation.resume()
+            }
+        }
+    }
+    
+    /// ElevenLabs streaming TTS
+    private func synthesizeAndPlayStreamingElevenLabs(job: SpeechJob, runNonce: UUID) async throws {
         // Get API key from environment, app settings, or ~/.env
         guard let apiKey = ElevenLabsApiKeyManager.resolvedKey(), !apiKey.isEmpty else {
             throw NSError(domain: "PiTalk", code: 401, userInfo: [
@@ -1766,8 +1947,10 @@ struct SessionRowView: View {
 // MARK: - Settings Tab (renamed from General)
 
 struct SettingsTabView: View {
+    @AppStorage("ttsProvider") var provider = "elevenlabs"
     @AppStorage("ttsVoice") var voice = "ally"
-    @AppStorage("elevenLabsApiKey") var apiKey = ""
+    @AppStorage("elevenLabsApiKey") var elevenLabsApiKey = ""
+    @AppStorage("googleTtsApiKey") var googleApiKey = ""
     @AppStorage("launchAtLogin") var launchAtLogin = false
     @AppStorage("showDockIcon") var showDockIcon = true
     @State private var isPreviewPlaying = false
@@ -1775,79 +1958,169 @@ struct SettingsTabView: View {
     @State private var envImportMessage: String?
     @State private var envImportMessageColor: Color = .secondary
 
-    private var trimmedStoredApiKey: String {
-        apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    private var currentProvider: SpeechPlaybackCoordinator.TTSProvider {
+        SpeechPlaybackCoordinator.TTSProvider(rawValue: provider) ?? .elevenlabs
+    }
+    
+    // ElevenLabs voices - British & Scottish
+    let elevenLabsVoices = ["ally", "dorothy", "lily", "alice", "dave", "joseph"]
+    
+    // Google voices - British & Australian
+    let googleVoices = ["george", "emma", "oliver", "sophia", "charlotte", "william", "jack", "olivia", "isla", "liam"]
+    
+    private var availableVoices: [String] {
+        currentProvider == .elevenlabs ? elevenLabsVoices : googleVoices
+    }
+    
+    private var trimmedElevenLabsApiKey: String {
+        elevenLabsApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    
+    private var trimmedGoogleApiKey: String {
+        googleApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var effectiveApiKey: String? {
-        if !trimmedStoredApiKey.isEmpty {
-            return trimmedStoredApiKey
+        switch currentProvider {
+        case .elevenlabs:
+            if !trimmedElevenLabsApiKey.isEmpty { return trimmedElevenLabsApiKey }
+            return ElevenLabsApiKeyManager.resolvedKey()
+        case .google:
+            if !trimmedGoogleApiKey.isEmpty { return trimmedGoogleApiKey }
+            return GoogleApiKeyManager.resolvedKey()
         }
-        return ElevenLabsApiKeyManager.resolvedKey()
     }
 
     private var hasApiKey: Bool {
         effectiveApiKey?.isEmpty == false
     }
     
-    // ElevenLabs voices - British & Scottish only
-    let availableVoices = [
-        "ally", "dorothy", "lily", "alice", "dave", "joseph"
-    ]
-    
     var body: some View {
         Form {
-            Section("ElevenLabs API") {
-                if !hasApiKey {
-                    Text("Welcome! Add your ElevenLabs API key to start using PiTalk.")
-                        .font(.subheadline)
-                        .foregroundColor(.orange)
+            Section("TTS Provider") {
+                Picker("Provider", selection: $provider) {
+                    Text("ElevenLabs").tag("elevenlabs")
+                    Text("Google Cloud").tag("google")
                 }
-
-                HStack {
-                    if showApiKey {
-                        TextField("API Key", text: $apiKey)
-                            .textFieldStyle(.roundedBorder)
-                    } else {
-                        SecureField("API Key", text: $apiKey)
-                            .textFieldStyle(.roundedBorder)
+                .pickerStyle(.segmented)
+                .onChange(of: provider) { newValue in
+                    // Reset voice to default for the new provider
+                    if newValue == "elevenlabs" && !elevenLabsVoices.contains(voice) {
+                        voice = "ally"
+                    } else if newValue == "google" && !googleVoices.contains(voice) {
+                        voice = "george"
                     }
-                    Button(showApiKey ? "Hide" : "Show") {
-                        showApiKey.toggle()
-                    }
-                    .buttonStyle(.borderless)
-                }
-
-                HStack(spacing: 8) {
-                    Button("Import from ~/.env") {
-                        importApiKeyFromDotEnv()
-                    }
-                    .buttonStyle(.bordered)
-
-                    Text("Looks for ELEVEN_API_KEY or ELEVENLABS_API_KEY")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-
-                if let envImportMessage {
-                    Text(envImportMessage)
-                        .font(.caption)
-                        .foregroundStyle(envImportMessageColor)
                 }
                 
-                if hasApiKey {
-                    Text("API key configured ✓")
+                if currentProvider == .elevenlabs {
+                    Text("Scottish & British accents • Streaming support • Best quality")
                         .font(.caption)
-                        .foregroundColor(.green)
+                        .foregroundColor(.secondary)
                 } else {
-                    Text("Get your API key from elevenlabs.io")
+                    Text("British & Australian accents • No streaming • Good quality")
                         .font(.caption)
-                        .foregroundColor(.orange)
+                        .foregroundColor(.secondary)
                 }
-                
-                Text("Tip: Finder-launched apps don't inherit shell env vars, so importing from ~/.env is recommended.")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
+            }
+            
+            if currentProvider == .elevenlabs {
+                Section("ElevenLabs API") {
+                    if !hasApiKey {
+                        Text("Add your ElevenLabs API key to start using PiTalk.")
+                            .font(.subheadline)
+                            .foregroundColor(.orange)
+                    }
+
+                    HStack {
+                        if showApiKey {
+                            TextField("API Key", text: $elevenLabsApiKey)
+                                .textFieldStyle(.roundedBorder)
+                        } else {
+                            SecureField("API Key", text: $elevenLabsApiKey)
+                                .textFieldStyle(.roundedBorder)
+                        }
+                        Button(showApiKey ? "Hide" : "Show") {
+                            showApiKey.toggle()
+                        }
+                        .buttonStyle(.borderless)
+                    }
+
+                    HStack(spacing: 8) {
+                        Button("Import from ~/.env") {
+                            importElevenLabsApiKey()
+                        }
+                        .buttonStyle(.bordered)
+
+                        Text("Looks for ELEVEN_API_KEY or ELEVENLABS_API_KEY")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let envImportMessage {
+                        Text(envImportMessage)
+                            .font(.caption)
+                            .foregroundStyle(envImportMessageColor)
+                    }
+                    
+                    if hasApiKey {
+                        Text("API key configured ✓")
+                            .font(.caption)
+                            .foregroundColor(.green)
+                    } else {
+                        Text("Get your API key from elevenlabs.io")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                    }
+                }
+            } else {
+                Section("Google Cloud API") {
+                    if !hasApiKey {
+                        Text("Add your Google Cloud API key to start using PiTalk.")
+                            .font(.subheadline)
+                            .foregroundColor(.orange)
+                    }
+
+                    HStack {
+                        if showApiKey {
+                            TextField("API Key", text: $googleApiKey)
+                                .textFieldStyle(.roundedBorder)
+                        } else {
+                            SecureField("API Key", text: $googleApiKey)
+                                .textFieldStyle(.roundedBorder)
+                        }
+                        Button(showApiKey ? "Hide" : "Show") {
+                            showApiKey.toggle()
+                        }
+                        .buttonStyle(.borderless)
+                    }
+
+                    HStack(spacing: 8) {
+                        Button("Import from ~/.env") {
+                            importGoogleApiKey()
+                        }
+                        .buttonStyle(.bordered)
+
+                        Text("Looks for GOOGLE_TTS_API_KEY")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let envImportMessage {
+                        Text(envImportMessage)
+                            .font(.caption)
+                            .foregroundStyle(envImportMessageColor)
+                    }
+                    
+                    if hasApiKey {
+                        Text("API key configured ✓")
+                            .font(.caption)
+                            .foregroundColor(.green)
+                    } else {
+                        Text("Get your API key from console.cloud.google.com")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                    }
+                }
             }
 
             Section("Voice") {
@@ -1865,6 +2138,12 @@ struct SettingsTabView: View {
                         previewVoice(voice)
                     }
                     .disabled(isPreviewPlaying || !hasApiKey)
+                }
+                
+                if currentProvider == .google {
+                    Text(voiceDescription(voice))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
             }
 
@@ -1892,16 +2171,32 @@ struct SettingsTabView: View {
         .formStyle(.grouped)
     }
     
+    func voiceDescription(_ voice: String) -> String {
+        switch voice.lowercased() {
+        case "george": return "British male (Studio quality)"
+        case "emma": return "British female (Studio quality)"
+        case "oliver": return "British male (Neural2)"
+        case "sophia": return "British female (Neural2)"
+        case "charlotte": return "British female (Neural2)"
+        case "william": return "British male (Neural2)"
+        case "jack": return "Australian male (Neural2)"
+        case "olivia": return "Australian female (Neural2)"
+        case "isla": return "Australian female (Neural2)"
+        case "liam": return "Australian male (Neural2)"
+        default: return ""
+        }
+    }
+    
     func updateDockIcon() {
         if let appDelegate = NSApp.delegate as? AppDelegate {
             appDelegate.updateDockIconVisibility()
         }
     }
 
-    func importApiKeyFromDotEnv() {
+    func importElevenLabsApiKey() {
         switch ElevenLabsApiKeyManager.importFromDotEnv(overwriteExisting: true) {
         case .imported:
-            apiKey = UserDefaults.standard.string(forKey: ElevenLabsApiKeyManager.userDefaultsKey) ?? apiKey
+            elevenLabsApiKey = UserDefaults.standard.string(forKey: ElevenLabsApiKeyManager.userDefaultsKey) ?? elevenLabsApiKey
             envImportMessage = "Imported API key from ~/.env"
             envImportMessageColor = .green
         case .missingFile:
@@ -1909,6 +2204,24 @@ struct SettingsTabView: View {
             envImportMessageColor = .orange
         case .keyNotFound:
             envImportMessage = "No ELEVEN_API_KEY or ELEVENLABS_API_KEY found in ~/.env"
+            envImportMessageColor = .orange
+        case .skippedExisting:
+            envImportMessage = "API key already configured"
+            envImportMessageColor = .secondary
+        }
+    }
+    
+    func importGoogleApiKey() {
+        switch GoogleApiKeyManager.importFromDotEnv(overwriteExisting: true) {
+        case .imported:
+            googleApiKey = UserDefaults.standard.string(forKey: GoogleApiKeyManager.userDefaultsKey) ?? googleApiKey
+            envImportMessage = "Imported API key from ~/.env"
+            envImportMessageColor = .green
+        case .missingFile:
+            envImportMessage = "No ~/.env file found"
+            envImportMessageColor = .orange
+        case .keyNotFound:
+            envImportMessage = "No GOOGLE_TTS_API_KEY found in ~/.env"
             envImportMessageColor = .orange
         case .skippedExisting:
             envImportMessage = "API key already configured"
@@ -1925,43 +2238,17 @@ struct SettingsTabView: View {
         
         Task {
             do {
-                // ElevenLabs voice ID mapping - British & Scottish only
-                let voiceIds: [String: String] = [
-                    "ally": "v2zbX16tJNtRIx8rSHDM",
-                    "dorothy": "ThT5KcBeYPX3keUQqHPh",
-                    "lily": "pFZP5JQG7iQjIQuC4Bku",
-                    "alice": "Xb7hH8MSUJpSbSDYk0k2",
-                    "dave": "CYw3kZ02Hs0563khs1Fj",
-                    "joseph": "Zlb1dXrM653N07WRdFW3",
-                ]
+                let audioData: Data
                 
-                let voiceId = voiceIds[voiceName.lowercased()] ?? "v2zbX16tJNtRIx8rSHDM"
-                let url = URL(string: "https://api.elevenlabs.io/v1/text-to-speech/\(voiceId)")!
-                var request = URLRequest(url: url)
-                request.httpMethod = "POST"
-                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                request.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
-                request.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
-                
-                let body: [String: Any] = [
-                    "text": text,
-                    "model_id": "eleven_monolingual_v1",
-                    "voice_settings": [
-                        "stability": 0.5,
-                        "similarity_boost": 0.75
-                    ]
-                ]
-                request.httpBody = try JSONSerialization.data(withJSONObject: body)
-                
-                let (data, response) = try await URLSession.shared.data(for: request)
-                
-                guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-                    throw NSError(domain: "PiTalk", code: 500, userInfo: [NSLocalizedDescriptionKey: "API error"])
+                if currentProvider == .elevenlabs {
+                    audioData = try await previewElevenLabsVoice(voiceName: voiceName, text: text, apiKey: apiKey)
+                } else {
+                    audioData = try await previewGoogleVoice(voiceName: voiceName, text: text, apiKey: apiKey)
                 }
                 
                 // Write MP3 to temp file and play
                 let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("voice_preview.mp3")
-                try data.write(to: tempFile)
+                try audioData.write(to: tempFile)
                 
                 // Play using ffplay or afplay
                 let ffplayPath = ["/opt/homebrew/bin/ffplay", "/usr/local/bin/ffplay"].first { 
@@ -1991,6 +2278,92 @@ struct SettingsTabView: View {
                 }
             }
         }
+    }
+    
+    func previewElevenLabsVoice(voiceName: String, text: String, apiKey: String) async throws -> Data {
+        let voiceIds: [String: String] = [
+            "ally": "v2zbX16tJNtRIx8rSHDM",
+            "dorothy": "ThT5KcBeYPX3keUQqHPh",
+            "lily": "pFZP5JQG7iQjIQuC4Bku",
+            "alice": "Xb7hH8MSUJpSbSDYk0k2",
+            "dave": "CYw3kZ02Hs0563khs1Fj",
+            "joseph": "Zlb1dXrM653N07WRdFW3",
+        ]
+        
+        let voiceId = voiceIds[voiceName.lowercased()] ?? "v2zbX16tJNtRIx8rSHDM"
+        let url = URL(string: "https://api.elevenlabs.io/v1/text-to-speech/\(voiceId)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
+        request.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
+        
+        let body: [String: Any] = [
+            "text": text,
+            "model_id": "eleven_monolingual_v1",
+            "voice_settings": [
+                "stability": 0.5,
+                "similarity_boost": 0.75
+            ]
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            throw NSError(domain: "PiTalk", code: 500, userInfo: [NSLocalizedDescriptionKey: "ElevenLabs API error"])
+        }
+        
+        return data
+    }
+    
+    func previewGoogleVoice(voiceName: String, text: String, apiKey: String) async throws -> Data {
+        let googleVoices: [String: (voiceName: String, languageCode: String)] = [
+            "george": ("en-GB-Studio-B", "en-GB"),
+            "emma": ("en-GB-Studio-C", "en-GB"),
+            "oliver": ("en-GB-Neural2-B", "en-GB"),
+            "sophia": ("en-GB-Neural2-A", "en-GB"),
+            "charlotte": ("en-GB-Neural2-C", "en-GB"),
+            "william": ("en-GB-Neural2-D", "en-GB"),
+            "jack": ("en-AU-Neural2-B", "en-AU"),
+            "olivia": ("en-AU-Neural2-A", "en-AU"),
+            "isla": ("en-AU-Neural2-C", "en-AU"),
+            "liam": ("en-AU-Neural2-D", "en-AU"),
+        ]
+        
+        let voiceConfig = googleVoices[voiceName.lowercased()] ?? ("en-GB-Studio-B", "en-GB")
+        let url = URL(string: "https://texttospeech.googleapis.com/v1/text:synthesize?key=\(apiKey)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        
+        let body: [String: Any] = [
+            "input": ["text": text],
+            "voice": [
+                "languageCode": voiceConfig.languageCode,
+                "name": voiceConfig.voiceName
+            ],
+            "audioConfig": [
+                "audioEncoding": "MP3",
+                "speakingRate": 1.0,
+                "pitch": 0
+            ]
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            throw NSError(domain: "PiTalk", code: 500, userInfo: [NSLocalizedDescriptionKey: "Google TTS API error"])
+        }
+        
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let audioContentBase64 = json["audioContent"] as? String,
+              let audioData = Data(base64Encoded: audioContentBase64) else {
+            throw NSError(domain: "PiTalk", code: 500, userInfo: [NSLocalizedDescriptionKey: "Failed to decode Google response"])
+        }
+        
+        return audioData
     }
     
     func setLaunchAtLogin(enabled: Bool) {
