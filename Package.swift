@@ -34,6 +34,11 @@ let package = Package(
             name: "ptts",
             dependencies: ["PiTalkClient"],
             path: "Sources/ptts"
+        ),
+        .testTarget(
+            name: "PiTalkTests",
+            dependencies: ["PiTalk"],
+            path: "Tests/PiTalkTests"
         )
     ]
 )
