@@ -1,35 +1,90 @@
 import Foundation
 import Combine
 
+// MARK: - Server Profile
+
+struct ServerProfile: Identifiable, Codable, Equatable {
+    var id = UUID()
+    var name: String
+    var host: String
+    var port: String
+    var token: String
+
+    var displayName: String {
+        name.isEmpty ? host : name
+    }
+
+    var websocketURL: URL? {
+        let cleanHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanHost.isEmpty else { return nil }
+        let cleanPort = port.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let numericPort = Int(cleanPort), numericPort > 0 else { return nil }
+        return URL(string: "ws://\(cleanHost):\(numericPort)/ws")
+    }
+}
+
+// MARK: - App Store
+
 @MainActor
 final class AppStore: ObservableObject {
-    @Published var host: String = ""
-    @Published var port: String = "18082"
-    @Published var token: String = ""
+    @Published var profiles: [ServerProfile] = []
+    @Published var activeProfileId: UUID?
     @Published var selectedSessionId: String?
     @Published var draftText: String = ""
-    /// Locally-tracked messages sent by the user (keyed by session id).
     @Published var sentMessages: [String: [SentMessage]] = [:]
 
     let socket = RemoteSocketClient()
     private var cancellables = Set<AnyCancellable>()
 
+    /// The currently active profile (if any).
+    var activeProfile: ServerProfile? {
+        profiles.first(where: { $0.id == activeProfileId })
+    }
+
     init() {
-        // Forward nested socket updates so SwiftUI views observing AppStore
-        // re-render for connection/snapshot changes.
         socket.objectWillChange
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
             }
             .store(in: &cancellables)
 
-        loadSettings()
+        loadProfiles()
+        migrateFromLegacySettings()
     }
 
-    func connect() {
-        guard let url = websocketURL else { return }
-        saveSettings()
-        socket.connect(url: url, token: token)
+    // MARK: - Profile Management
+
+    func addProfile(_ profile: ServerProfile) {
+        profiles.append(profile)
+        saveProfiles()
+    }
+
+    func updateProfile(_ profile: ServerProfile) {
+        guard let index = profiles.firstIndex(where: { $0.id == profile.id }) else { return }
+        profiles[index] = profile
+        saveProfiles()
+        // If we updated the active profile, reconnect with new settings.
+        if profile.id == activeProfileId {
+            connectToProfile(profile)
+        }
+    }
+
+    func deleteProfile(_ profile: ServerProfile) {
+        profiles.removeAll(where: { $0.id == profile.id })
+        if activeProfileId == profile.id {
+            disconnect()
+            activeProfileId = nil
+        }
+        saveProfiles()
+    }
+
+    func connectToProfile(_ profile: ServerProfile) {
+        guard let url = profile.websocketURL else { return }
+        activeProfileId = profile.id
+        sentMessages.removeAll()
+        selectedSessionId = nil
+        saveProfiles()
+        socket.connect(url: url, token: profile.token)
     }
 
     func disconnect() {
@@ -37,13 +92,15 @@ final class AppStore: ObservableObject {
     }
 
     func reconnect() {
-        socket.reconnectNow()
+        if let profile = activeProfile {
+            connectToProfile(profile)
+        } else {
+            socket.reconnectNow()
+        }
     }
 
     func stopAll() {
-        Task {
-            try? await socket.stopAll()
-        }
+        Task { try? await socket.stopAll() }
     }
 
     func sendDraftToSelectedSession() {
@@ -51,7 +108,6 @@ final class AppStore: ObservableObject {
         guard !text.isEmpty else { return }
         guard let sessionId = selectedSessionId else { return }
 
-        // Track locally so it shows in the session timeline
         let msg = SentMessage(text: text)
         sentMessages[sessionId, default: []].append(msg)
 
@@ -65,33 +121,59 @@ final class AppStore: ObservableObject {
         }
     }
 
-    var websocketURL: URL? {
-        let cleanHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanHost.isEmpty else { return nil }
+    // MARK: - Persistence
 
-        let cleanPort = port.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let numericPort = Int(cleanPort), numericPort > 0 else { return nil }
+    private static let profilesKey = "pitalk.profiles"
+    private static let activeProfileKey = "pitalk.activeProfileId"
 
-        return URL(string: "ws://\(cleanHost):\(numericPort)/ws")
+    private func loadProfiles() {
+        let defaults = UserDefaults.standard
+        if let data = defaults.data(forKey: Self.profilesKey),
+           let decoded = try? JSONDecoder().decode([ServerProfile].self, from: data) {
+            profiles = decoded
+        }
+        if let idString = defaults.string(forKey: Self.activeProfileKey),
+           let id = UUID(uuidString: idString) {
+            activeProfileId = id
+        }
     }
 
-    private func loadSettings() {
+    private func saveProfiles() {
         let defaults = UserDefaults.standard
-        host = defaults.string(forKey: "pitalk.remote.host") ?? ""
-        let storedPort = defaults.integer(forKey: "pitalk.remote.port")
-        port = storedPort > 0 ? String(storedPort) : "18082"
-        token = defaults.string(forKey: "pitalk.remote.token") ?? ""
+        if let data = try? JSONEncoder().encode(profiles) {
+            defaults.set(data, forKey: Self.profilesKey)
+        }
+        defaults.set(activeProfileId?.uuidString, forKey: Self.activeProfileKey)
     }
 
-    private func saveSettings() {
+    /// Migrate from the old single-server settings to a profile.
+    private func migrateFromLegacySettings() {
         let defaults = UserDefaults.standard
-        defaults.set(host, forKey: "pitalk.remote.host")
-        defaults.set(Int(port), forKey: "pitalk.remote.port")
-        defaults.set(token, forKey: "pitalk.remote.token")
+        let legacyHost = defaults.string(forKey: "pitalk.remote.host") ?? ""
+        guard !legacyHost.isEmpty, profiles.isEmpty else { return }
+
+        let legacyPort = defaults.integer(forKey: "pitalk.remote.port")
+        let legacyToken = defaults.string(forKey: "pitalk.remote.token") ?? ""
+
+        let profile = ServerProfile(
+            name: "My Mac",
+            host: legacyHost,
+            port: legacyPort > 0 ? String(legacyPort) : "18082",
+            token: legacyToken
+        )
+        profiles.append(profile)
+        activeProfileId = profile.id
+        saveProfiles()
+
+        // Clean up legacy keys
+        defaults.removeObject(forKey: "pitalk.remote.host")
+        defaults.removeObject(forKey: "pitalk.remote.port")
+        defaults.removeObject(forKey: "pitalk.remote.token")
     }
 }
 
-/// A message sent by the user from the iOS app.
+// MARK: - Sent Message
+
 struct SentMessage: Identifiable {
     let id = UUID()
     let text: String

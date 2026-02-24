@@ -3,12 +3,14 @@ import SwiftUI
 struct RemoteSettingsView: View {
     @EnvironmentObject private var store: AppStore
     @AppStorage("pitalk.appearance") private var appearance: AppAppearance = .system
+    @State private var showAddProfile = false
+    @State private var editingProfile: ServerProfile?
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 14) {
-                    connectionSection
+                    profilesSection
                     appearanceSection
                     statusSection
                 }
@@ -17,44 +19,140 @@ struct RemoteSettingsView: View {
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
+            .sheet(isPresented: $showAddProfile) {
+                ProfileEditorSheet(
+                    profile: ServerProfile(name: "", host: "", port: "18082", token: ""),
+                    isNew: true,
+                    onSave: { profile in
+                        store.addProfile(profile)
+                    }
+                )
+            }
+            .sheet(item: $editingProfile) { profile in
+                ProfileEditorSheet(
+                    profile: profile,
+                    isNew: false,
+                    onSave: { updated in
+                        store.updateProfile(updated)
+                    }
+                )
+            }
         }
     }
 
-    private var connectionSection: some View {
+    // MARK: - Profiles
+
+    private var profilesSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Connection")
-                .font(.headline)
-
-            TextField("Host (tailnet DNS or IP)", text: $store.host)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .textFieldStyle(.roundedBorder)
-
-            TextField("Port", text: $store.port)
-                .keyboardType(.numberPad)
-                .textFieldStyle(.roundedBorder)
-
-            SecureField("Token (optional in no-auth dev mode)", text: $store.token)
-                .textFieldStyle(.roundedBorder)
-
-            HStack(spacing: 10) {
-                Button("Connect") {
-                    store.connect()
+            HStack {
+                Text("Servers")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    showAddProfile = true
+                } label: {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(.blue)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.plain)
+            }
 
-                Button("Disconnect") {
-                    store.disconnect()
+            if store.profiles.isEmpty {
+                VStack(spacing: 6) {
+                    Image(systemName: "server.rack")
+                        .font(.title3)
+                        .foregroundStyle(.tertiary)
+                    Text("No servers configured")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                    Text("Add a server to get started")
+                        .font(.caption2)
+                        .foregroundStyle(.quaternary)
                 }
-                .buttonStyle(.bordered)
-
-                Spacer(minLength: 0)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+            } else {
+                VStack(spacing: 6) {
+                    ForEach(store.profiles) { profile in
+                        profileRow(profile)
+                    }
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
     }
+
+    private func profileRow(_ profile: ServerProfile) -> some View {
+        let isActive = store.activeProfileId == profile.id
+        let isConnected = isActive && store.socket.connectionState == .connected
+
+        return HStack(spacing: 10) {
+            Circle()
+                .fill(isConnected ? Color.green : (isActive ? Color.orange : Color.gray.opacity(0.3)))
+                .frame(width: 8, height: 8)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(profile.displayName)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                Text("\(profile.host):\(profile.port)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 4)
+
+            if isActive {
+                Button {
+                    store.disconnect()
+                    store.activeProfileId = nil
+                } label: {
+                    Text("Disconnect")
+                        .font(.caption2.weight(.medium))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                }
+                .buttonStyle(.bordered)
+                .tint(.red)
+            } else {
+                Button {
+                    store.connectToProfile(profile)
+                } label: {
+                    Text("Connect")
+                        .font(.caption2.weight(.medium))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .contextMenu {
+            Button {
+                editingProfile = profile
+            } label: {
+                Label("Edit", systemImage: "pencil")
+            }
+            Button(role: .destructive) {
+                store.deleteProfile(profile)
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
+        .onTapGesture {
+            if !isActive {
+                store.connectToProfile(profile)
+            }
+        }
+    }
+
+    // MARK: - Appearance
 
     private var appearanceSection: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -73,9 +171,11 @@ struct RemoteSettingsView: View {
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
     }
 
+    // MARK: - Status
+
     private var statusSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Status")
+            Text("Connection")
                 .font(.headline)
 
             HStack {
@@ -83,6 +183,15 @@ struct RemoteSettingsView: View {
                 Spacer()
                 Text(stateLabel)
                     .foregroundStyle(stateColor)
+            }
+
+            if let profile = store.activeProfile {
+                HStack {
+                    Text("Server")
+                    Spacer()
+                    Text(profile.displayName)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             HStack {
@@ -118,6 +227,84 @@ struct RemoteSettingsView: View {
         case .connected: return .green
         case .connecting, .reconnecting: return .orange
         case .idle, .failed: return .red
+        }
+    }
+}
+
+// MARK: - Profile Editor Sheet
+
+private struct ProfileEditorSheet: View {
+    @State var profile: ServerProfile
+    let isNew: Bool
+    let onSave: (ServerProfile) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 14) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Server Name")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        TextField("e.g. M4 MacBook, Intel Mac", text: $profile.name)
+                            .textInputAutocapitalization(.words)
+                            .font(.subheadline)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+
+                        Text("Host")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        TextField("Tailscale IP or hostname", text: $profile.host)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.URL)
+                            .font(.subheadline)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+
+                        Text("Port")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        TextField("18082", text: $profile.port)
+                            .keyboardType(.numberPad)
+                            .font(.subheadline)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+
+                        Text("Token")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        SecureField("Optional for no-auth dev mode", text: $profile.token)
+                            .font(.subheadline)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                    }
+                    .padding(12)
+                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 10)
+            }
+            .navigationTitle(isNew ? "Add Server" : "Edit Server")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        onSave(profile)
+                        dismiss()
+                    }
+                    .disabled(profile.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
         }
     }
 }

@@ -62,8 +62,8 @@ struct ContentView: View {
         .tint(.blue)
         .ignoresSafeArea(.keyboard, edges: .bottom)
         .onAppear {
-            if !store.host.isEmpty {
-                store.connect()
+            if let profile = store.activeProfile {
+                store.connectToProfile(profile)
             }
         }
     }
