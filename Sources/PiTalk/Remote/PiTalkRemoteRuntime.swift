@@ -48,6 +48,7 @@ final class PiTalkRemoteRuntime {
             try server.start()
             self.server = server
             bindPublishers()
+            wireAudioMirrorHandler()
             publishSnapshotIfChanged(force: true)
         } catch {
             print("PiTalk Remote: failed to start: \(error.localizedDescription)")
@@ -56,6 +57,7 @@ final class PiTalkRemoteRuntime {
 
     func stop() {
         cancellables.removeAll()
+        appDelegate?.speechCoordinator?.setAudioMirrorHandler(nil)
         server?.stop()
         server = nil
     }
@@ -87,6 +89,23 @@ final class PiTalkRemoteRuntime {
                 }
             }
             .store(in: &cancellables)
+    }
+
+    private func wireAudioMirrorHandler() {
+        appDelegate?.speechCoordinator?.setAudioMirrorHandler { [weak self] event in
+            guard let self else { return }
+            Task { @MainActor in
+                guard let server = self.server else { return }
+                switch event {
+                case .start(let payload):
+                    server.publishAudioStart(payload)
+                case .chunk(let payload):
+                    server.publishAudioChunk(payload)
+                case .end(let payload):
+                    server.publishAudioEnd(payload)
+                }
+            }
+        }
     }
 
     private func publishSnapshotIfChanged(force: Bool = false) {

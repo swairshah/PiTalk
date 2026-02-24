@@ -184,7 +184,7 @@ struct PiTalkRemoteFrame: Codable {
     let ts: Int64?
     let payload: JSONValue?
 
-    static func event(name: String, seq: Int64, payload: JSONValue?) -> PiTalkRemoteFrame {
+    static func event(name: String, seq: Int64?, payload: JSONValue?) -> PiTalkRemoteFrame {
         PiTalkRemoteFrame(
             type: .event,
             name: name,
@@ -260,6 +260,10 @@ struct PiTalkRemoteTTSSpeakPayload: Codable {
 
 struct PiTalkRemoteTTSStopPayload: Codable {
     let scope: String?
+}
+
+struct PiTalkRemoteAudioSetStreamPayload: Codable {
+    let enabled: Bool
 }
 
 struct PiTalkRemoteServerHelloPayload: Codable {

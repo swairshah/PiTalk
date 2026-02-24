@@ -7,6 +7,7 @@ private final class PiTalkRemotePeer {
     var handshakeBuffer = Data()
     var frameBuffer = Data()
     var authenticated = false
+    var audioStreamEnabled = false
     var awaitingPongCount = 0
     var idempotentAckByKey: [String: PiTalkRemoteFrame] = [:]
 
@@ -18,6 +19,12 @@ private final class PiTalkRemotePeer {
 private struct PiTalkRemoteStoredEvent {
     let seq: Int64
     let frame: PiTalkRemoteFrame
+}
+
+private enum PiTalkRemoteBroadcastScope {
+    case allAuthenticated
+    case only(PiTalkRemotePeer)
+    case audioSubscribers
 }
 
 final class PiTalkRemoteServer {
@@ -328,6 +335,9 @@ final class PiTalkRemoteServer {
         case "tts.stop":
             handleTTSStop(frame: frame, requestId: requestId, peer: peer)
 
+        case "audio.setStream":
+            handleAudioSetStream(frame: frame, requestId: requestId, peer: peer)
+
         default:
             sendError(name: name, requestId: requestId, code: "UNKNOWN_COMMAND", message: "unknown command: \(name)", to: peer)
         }
@@ -446,6 +456,30 @@ final class PiTalkRemoteServer {
         handleAsyncCommand(command, name: name, requestId: requestId, idempotencyKey: idempotencyKey, peer: peer)
     }
 
+    private func handleAudioSetStream(frame: PiTalkRemoteFrame, requestId: String, peer: PiTalkRemotePeer) {
+        let name = "audio.setStream"
+        guard let idempotencyKey = frame.idempotencyKey, !idempotencyKey.isEmpty else {
+            sendError(name: name, requestId: requestId, code: "BAD_REQUEST", message: "idempotencyKey is required", to: peer)
+            return
+        }
+
+        if let previous = peer.idempotentAckByKey[idempotencyKey] {
+            send(frame: previous, to: peer)
+            return
+        }
+
+        guard let payload = frame.payload?.decode(PiTalkRemoteAudioSetStreamPayload.self) else {
+            sendError(name: name, requestId: requestId, code: "BAD_REQUEST", message: "enabled is required", to: peer)
+            return
+        }
+
+        peer.audioStreamEnabled = payload.enabled
+        let ackPayload: JSONValue = .object(["enabled": .bool(payload.enabled)])
+        let ack = PiTalkRemoteFrame.ack(name: name, requestId: requestId, payload: ackPayload)
+        peer.idempotentAckByKey[idempotencyKey] = ack
+        send(frame: ack, to: peer)
+    }
+
     private func replayEvents(from seq: Int64, to peer: PiTalkRemotePeer) {
         let missing = replayLog.filter { $0.seq > seq }
         if missing.isEmpty {
@@ -454,7 +488,11 @@ final class PiTalkRemoteServer {
         }
 
         if let first = missing.first, first.seq != seq + 1 {
-            emitEvent(name: "stream.reset", payload: .object(["reason": .string("replay-window-exceeded")]), only: peer)
+            emitEvent(
+                name: "stream.reset",
+                payload: .object(["reason": .string("replay-window-exceeded")]),
+                scope: .only(peer)
+            )
             sendSnapshotEvent(to: peer)
             return
         }
@@ -467,7 +505,7 @@ final class PiTalkRemoteServer {
     private func sendSnapshotEvent(to peer: PiTalkRemotePeer) {
         let snapshot = snapshotProvider()
         let payload = JSONValue.fromEncodable(snapshot) ?? .object([:])
-        emitEvent(name: "sessions.updated", payload: payload, only: peer)
+        emitEvent(name: "sessions.updated", payload: payload, scope: .only(peer))
     }
 
     private func handleAsyncCommand(
@@ -533,23 +571,83 @@ final class PiTalkRemoteServer {
         }
     }
 
-    private func emitEvent(name: String, payload: JSONValue, only peer: PiTalkRemotePeer? = nil) {
-        eventSeq += 1
-        let frame = PiTalkRemoteFrame.event(name: name, seq: eventSeq, payload: payload)
+    func publishAudioStart(_ event: PiTalkRemoteAudioStart) {
+        let payload = JSONValue.fromEncodable(event) ?? .object([:])
+        queue.async {
+            self.emitEvent(
+                name: "audio.start",
+                payload: payload,
+                scope: .audioSubscribers,
+                includeSequence: false,
+                storeReplay: false
+            )
+        }
+    }
 
-        replayLog.append(PiTalkRemoteStoredEvent(seq: eventSeq, frame: frame))
-        if replayLog.count > config.replayLimit {
-            replayLog.removeFirst(replayLog.count - config.replayLimit)
+    func publishAudioChunk(_ event: PiTalkRemoteAudioChunk) {
+        let payload = JSONValue.fromEncodable(event) ?? .object([:])
+        queue.async {
+            self.emitEvent(
+                name: "audio.chunk",
+                payload: payload,
+                scope: .audioSubscribers,
+                includeSequence: false,
+                storeReplay: false
+            )
+        }
+    }
+
+    func publishAudioEnd(_ event: PiTalkRemoteAudioEnd) {
+        let payload = JSONValue.fromEncodable(event) ?? .object([:])
+        queue.async {
+            self.emitEvent(
+                name: "audio.end",
+                payload: payload,
+                scope: .audioSubscribers,
+                includeSequence: false,
+                storeReplay: false
+            )
+        }
+    }
+
+    private func emitEvent(
+        name: String,
+        payload: JSONValue,
+        scope: PiTalkRemoteBroadcastScope = .allAuthenticated,
+        includeSequence: Bool = true,
+        storeReplay: Bool = true
+    ) {
+        let seqValue: Int64?
+        if includeSequence {
+            eventSeq += 1
+            seqValue = eventSeq
+        } else {
+            seqValue = nil
         }
 
-        if let peer {
+        let frame = PiTalkRemoteFrame.event(name: name, seq: seqValue, payload: payload)
+
+        if storeReplay, let seq = seqValue {
+            replayLog.append(PiTalkRemoteStoredEvent(seq: seq, frame: frame))
+            if replayLog.count > config.replayLimit {
+                replayLog.removeFirst(replayLog.count - config.replayLimit)
+            }
+        }
+
+        switch scope {
+        case .allAuthenticated:
+            for peer in peers.values where peer.authenticated {
+                send(frame: frame, to: peer)
+            }
+
+        case .only(let peer):
             guard peer.authenticated else { return }
             send(frame: frame, to: peer)
-            return
-        }
 
-        for peer in peers.values where peer.authenticated {
-            send(frame: frame, to: peer)
+        case .audioSubscribers:
+            for peer in peers.values where peer.authenticated && peer.audioStreamEnabled {
+                send(frame: frame, to: peer)
+            }
         }
     }
 

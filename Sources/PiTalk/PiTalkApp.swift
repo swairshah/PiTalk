@@ -743,8 +743,18 @@ final class SpeechPlaybackCoordinator {
 
     private let defaultVoiceProvider: () -> String
 
+    // Remote audio mirror callback (e.g. iOS companion stream).
+    private let audioMirrorHandlerLock = NSLock()
+    private var audioMirrorHandler: ((PiTalkRemoteAudioMirrorEvent) -> Void)?
+
     init(defaultVoiceProvider: @escaping () -> String) {
         self.defaultVoiceProvider = defaultVoiceProvider
+    }
+
+    func setAudioMirrorHandler(_ handler: ((PiTalkRemoteAudioMirrorEvent) -> Void)?) {
+        audioMirrorHandlerLock.lock()
+        audioMirrorHandler = handler
+        audioMirrorHandlerLock.unlock()
     }
 
     func enqueue(text: String,
@@ -1152,6 +1162,43 @@ final class SpeechPlaybackCoordinator {
         return audioData
     }
     
+    private func audioStreamID(job: SpeechJob, runNonce: UUID) -> String {
+        "\(job.historyEntryId.uuidString)-\(runNonce.uuidString)"
+    }
+
+    private func emitAudioMirror(_ event: PiTalkRemoteAudioMirrorEvent) {
+        audioMirrorHandlerLock.lock()
+        let handler = audioMirrorHandler
+        audioMirrorHandlerLock.unlock()
+        handler?(event)
+    }
+
+    private func emitAudioMirrorStart(job: SpeechJob, runNonce: UUID) -> String {
+        let streamId = audioStreamID(job: job, runNonce: runNonce)
+        emitAudioMirror(
+            .start(
+                PiTalkRemoteAudioStart(
+                    streamId: streamId,
+                    sourceApp: job.sourceApp,
+                    sessionId: job.sessionId,
+                    pid: job.pid,
+                    voice: job.voice,
+                    mimeType: "audio/mpeg"
+                )
+            )
+        )
+        return streamId
+    }
+
+    private func emitAudioMirrorChunk(streamId: String, data: Data) {
+        guard !data.isEmpty else { return }
+        emitAudioMirror(.chunk(PiTalkRemoteAudioChunk(streamId: streamId, chunk: data)))
+    }
+
+    private func emitAudioMirrorEnd(streamId: String, status: String) {
+        emitAudioMirror(.end(PiTalkRemoteAudioEnd(streamId: streamId, status: status)))
+    }
+
     /// Streaming TTS - uses fast model and streaming API for lower latency
     /// For ElevenLabs: uses streaming API. For Google: falls back to non-streaming.
     private func synthesizeAndPlayStreaming(job: SpeechJob, runNonce: UUID) async throws {
@@ -1171,22 +1218,35 @@ final class SpeechPlaybackCoordinator {
                 NSLocalizedDescriptionKey: "ffplay not found. Install with: brew install ffmpeg"
             ])
         }
-        
+
+        let streamId = emitAudioMirrorStart(job: job, runNonce: runNonce)
+        var streamEnded = false
+        defer {
+            if !streamEnded {
+                emitAudioMirrorEnd(streamId: streamId, status: "failed")
+            }
+        }
+
         // Synthesize the audio
         let audioData = try await synthesizeWithGoogle(job: job)
-        
+        emitAudioMirrorChunk(streamId: streamId, data: audioData)
+
         // Check if we should still continue
-        if !shouldContinue(runNonce: runNonce) { return }
-        
+        if !shouldContinue(runNonce: runNonce) {
+            streamEnded = true
+            emitAudioMirrorEnd(streamId: streamId, status: "interrupted")
+            return
+        }
+
         // Write to temp file and play
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("pitalk-google-\(UUID().uuidString).mp3")
         try audioData.write(to: tempURL)
-        
+
         defer {
             try? FileManager.default.removeItem(at: tempURL)
         }
-        
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: ffplayPath)
         process.arguments = [
@@ -1195,19 +1255,22 @@ final class SpeechPlaybackCoordinator {
             "-loglevel", "quiet",
             tempURL.path
         ]
-        
+
         try process.run()
-        
+
         queue.sync {
             self.currentProcess = process
         }
-        
+
         // Wait for ffplay to finish
         await withCheckedContinuation { continuation in
             process.terminationHandler = { _ in
                 continuation.resume()
             }
         }
+
+        streamEnded = true
+        emitAudioMirrorEnd(streamId: streamId, status: "completed")
     }
     
     /// ElevenLabs streaming TTS
@@ -1223,6 +1286,14 @@ final class SpeechPlaybackCoordinator {
             throw NSError(domain: "PiTalk", code: 404, userInfo: [
                 NSLocalizedDescriptionKey: "ffplay not found. Install with: brew install ffmpeg"
             ])
+        }
+
+        var streamId: String?
+        var streamEnded = false
+        defer {
+            if let streamId, !streamEnded {
+                emitAudioMirrorEnd(streamId: streamId, status: "failed")
+            }
         }
         
         // Map voice name to ElevenLabs voice ID
@@ -1297,6 +1368,8 @@ final class SpeechPlaybackCoordinator {
                 NSLocalizedDescriptionKey: "ElevenLabs API error (\(httpResponse.statusCode)): \(errorMessage)"
             ])
         }
+
+        streamId = emitAudioMirrorStart(job: job, runNonce: runNonce)
         
         // Collect chunks and start playback early
         var totalBytes = 0
@@ -1308,6 +1381,10 @@ final class SpeechPlaybackCoordinator {
         for try await byte in asyncBytes {
             if !shouldContinue(runNonce: runNonce) {
                 ffplayProcess?.terminate()
+                if let streamId {
+                    streamEnded = true
+                    emitAudioMirrorEnd(streamId: streamId, status: "interrupted")
+                }
                 return
             }
             
@@ -1317,6 +1394,9 @@ final class SpeechPlaybackCoordinator {
             // Flush buffer periodically
             if buffer.count >= flushSize {
                 fileHandle.write(buffer)
+                if let streamId {
+                    emitAudioMirrorChunk(streamId: streamId, data: buffer)
+                }
                 buffer.removeAll(keepingCapacity: true)
             }
             
@@ -1327,6 +1407,9 @@ final class SpeechPlaybackCoordinator {
                 // Flush remaining buffer
                 if !buffer.isEmpty {
                     fileHandle.write(buffer)
+                    if let streamId {
+                        emitAudioMirrorChunk(streamId: streamId, data: buffer)
+                    }
                     buffer.removeAll(keepingCapacity: true)
                 }
                 try fileHandle.synchronize()
@@ -1352,6 +1435,9 @@ final class SpeechPlaybackCoordinator {
         // Flush any remaining buffer
         if !buffer.isEmpty {
             fileHandle.write(buffer)
+            if let streamId {
+                emitAudioMirrorChunk(streamId: streamId, data: buffer)
+            }
         }
         
         // If we never started playback (very short audio), start it now
@@ -1382,6 +1468,11 @@ final class SpeechPlaybackCoordinator {
                     continuation.resume()
                 }
             }
+        }
+
+        if let streamId {
+            streamEnded = true
+            emitAudioMirrorEnd(streamId: streamId, status: "completed")
         }
     }
 
@@ -1708,6 +1799,11 @@ struct SettingsView: View {
             HistoryView()
                 .tabItem {
                     Label("History", systemImage: "clock")
+                }
+
+            PermissionsView()
+                .tabItem {
+                    Label("Permissions", systemImage: "lock.shield")
                 }
 
             AboutView()
@@ -2872,6 +2968,129 @@ struct HelpView: View {
         )
     }
 }
+
+// MARK: - Permissions View
+
+struct PermissionsView: View {
+    @State private var microphoneStatus: PermissionsManager.PermissionStatus = .notDetermined
+    @State private var accessibilityStatus: PermissionsManager.PermissionStatus = .notDetermined
+    
+    private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 24) {
+                // Header
+                VStack(spacing: 8) {
+                    Text("Permissions")
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                    Text("Grant or review permissions anytime.")
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.top, 8)
+                
+                // Permission rows
+                VStack(spacing: 12) {
+                    PermissionRowView(
+                        title: "Microphone",
+                        description: "Monitors mic activity to pause speech when you're talking",
+                        status: microphoneStatus,
+                        onRequest: {
+                            Task {
+                                switch microphoneStatus {
+                                case .notDetermined:
+                                    _ = await PermissionsManager.requestMicrophone()
+                                    refreshStatus()
+                                case .denied:
+                                    PermissionsManager.openMicrophoneSettings()
+                                case .granted:
+                                    break
+                                }
+                            }
+                        }
+                    )
+                    
+                    PermissionRowView(
+                        title: "Accessibility",
+                        description: "Needed for Jump feature to focus terminal windows",
+                        status: accessibilityStatus,
+                        onRequest: {
+                            PermissionsManager.requestAccessibility()
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                                PermissionsManager.openAccessibilitySettings()
+                            }
+                        }
+                    )
+                }
+                
+                Spacer(minLength: 20)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+        }
+        .onAppear { refreshStatus() }
+        .onReceive(timer) { _ in refreshStatus() }
+    }
+    
+    private func refreshStatus() {
+        microphoneStatus = PermissionsManager.checkMicrophone()
+        accessibilityStatus = PermissionsManager.checkAccessibility()
+    }
+}
+
+struct PermissionRowView: View {
+    let title: String
+    let description: String
+    let status: PermissionsManager.PermissionStatus
+    let onRequest: () -> Void
+    
+    private var isGranted: Bool {
+        status == .granted
+    }
+    
+    var body: some View {
+        HStack(spacing: 16) {
+            // Status icon
+            Image(systemName: isGranted ? "checkmark" : "circle")
+                .font(.system(size: 18, weight: .medium))
+                .foregroundColor(isGranted ? .green : .secondary.opacity(0.5))
+                .frame(width: 24)
+            
+            // Text
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                Text(description)
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            }
+            
+            Spacer()
+            
+            // Action button
+            if !isGranted {
+                Button(status == .notDetermined ? "Allow" : "Open Settings") {
+                    onRequest()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(isGranted ? Color.green.opacity(0.05) : Color(NSColor.controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(isGranted ? Color.green.opacity(0.5) : Color.secondary.opacity(0.2), lineWidth: 1)
+        )
+    }
+}
+
+// MARK: - About View
 
 struct AboutView: View {
     var body: some View {

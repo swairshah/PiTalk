@@ -93,6 +93,29 @@ struct RemoteStopPayload: Codable {
     let scope: String
 }
 
+struct RemoteAudioSetStreamPayload: Codable {
+    let enabled: Bool
+}
+
+struct RemoteAudioStartEvent: Codable {
+    let streamId: String
+    let sourceApp: String?
+    let sessionId: String?
+    let pid: Int?
+    let voice: String?
+    let mimeType: String
+}
+
+struct RemoteAudioChunkEvent: Codable {
+    let streamId: String
+    let chunk: Data
+}
+
+struct RemoteAudioEndEvent: Codable {
+    let streamId: String
+    let status: String
+}
+
 struct RemoteErrorPayload: Codable {
     let code: String
     let message: String

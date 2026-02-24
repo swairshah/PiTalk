@@ -26,7 +26,7 @@ All frames use:
 Notes:
 
 - `requestId` required for `cmd`; echoed in `ack`/`error`.
-- `seq` required on server `event` frames.
+- `seq` is present on replayable state events (`sessions.updated`, `playback.state`, `history.appended`, `stream.reset`).
 - `idempotencyKey` required for mutating commands.
 
 ## Handshake
@@ -131,6 +131,24 @@ Payload:
 
 (v1 global stop; session-scoped stop can be added later)
 
+## `audio.setStream`
+
+Controls remote audio chunk fan-out for this websocket client.
+
+Payload:
+
+```json
+{
+  "enabled": true
+}
+```
+
+Behavior:
+
+- Default is `enabled=false` on every new connection.
+- When `enabled=false`, the server does **not** send audio chunks to that client.
+- When toggled back to `enabled=true`, streaming resumes from the **next live chunk** (no backlog replay).
+
 ## Events
 
 ## `sessions.updated`
@@ -159,6 +177,41 @@ Emitted when queue/playing state changes.
 ## `history.appended`
 
 Emitted when a new history entry is recorded.
+
+## `audio.start` / `audio.chunk` / `audio.end`
+
+Live audio mirror events for clients that enabled `audio.setStream`.
+
+`audio.start` payload:
+
+```json
+{
+  "streamId": "...",
+  "sourceApp": "pi",
+  "sessionId": "...",
+  "pid": 12345,
+  "voice": "ally",
+  "mimeType": "audio/mpeg"
+}
+```
+
+`audio.chunk` payload:
+
+```json
+{
+  "streamId": "...",
+  "chunk": "<base64-mp3-bytes>"
+}
+```
+
+`audio.end` payload:
+
+```json
+{
+  "streamId": "...",
+  "status": "completed|interrupted|failed"
+}
+```
 
 ## `chat.delta` / `chat.final` (optional in v1)
 

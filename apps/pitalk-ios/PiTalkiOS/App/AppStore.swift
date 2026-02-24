@@ -32,6 +32,7 @@ final class AppStore: ObservableObject {
     @Published var selectedSessionId: String?
     @Published var draftText: String = ""
     @Published var sentMessages: [String: [SentMessage]] = [:]
+    @Published var remoteAudioStreamingRequested: Bool = false
     /// Set by deep link from Live Activity tap — drives navigation.
     @Published var deepLinkSessionId: String?
 
@@ -98,11 +99,13 @@ final class AppStore: ObservableObject {
         activeProfileId = profile.id
         sentMessages.removeAll()
         selectedSessionId = nil
+        remoteAudioStreamingRequested = false
         saveProfiles()
         socket.connect(url: url, token: profile.token)
     }
 
     func disconnect() {
+        remoteAudioStreamingRequested = false
         socket.disconnect()
         LiveActivityManager.shared.endAll()
     }
@@ -117,6 +120,17 @@ final class AppStore: ObservableObject {
 
     func stopAll() {
         Task { try? await socket.stopAll() }
+    }
+
+    func setRemoteAudioStreaming(enabled: Bool) {
+        Task {
+            do {
+                try await socket.setAudioStreaming(enabled: enabled)
+                remoteAudioStreamingRequested = enabled
+            } catch {
+                remoteAudioStreamingRequested = false
+            }
+        }
     }
 
     func sendDraftToSelectedSession() {

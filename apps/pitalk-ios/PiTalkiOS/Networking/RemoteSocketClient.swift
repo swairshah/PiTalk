@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Combine
 
@@ -15,6 +16,8 @@ final class RemoteSocketClient: ObservableObject {
     @Published private(set) var snapshot: RemoteSnapshot = .empty
     @Published private(set) var lastError: String?
     @Published private(set) var lastSeq: Int64 = 0
+    @Published private(set) var audioStreamEnabled: Bool = false
+    @Published private(set) var audioPlaybackActive: Bool = false
 
     private var task: URLSessionWebSocketTask?
     private var session: URLSession?
@@ -22,6 +25,14 @@ final class RemoteSocketClient: ObservableObject {
     private var reconnectWorkItem: DispatchWorkItem?
     private var pendingRequests: [String: CheckedContinuation<[String: Any], Error>] = [:]
     private var snapshotPollTask: Task<Void, Never>?
+
+    private struct IncomingAudioStream {
+        var data = Data()
+    }
+
+    private var incomingAudioStreams: [String: IncomingAudioStream] = [:]
+    private var completedAudioQueue: [Data] = []
+    private var audioPlayer: AVAudioPlayer?
 
     private(set) var endpointURL: URL?
     private(set) var authToken: String = ""
@@ -46,6 +57,12 @@ final class RemoteSocketClient: ObservableObject {
         task = nil
         session?.invalidateAndCancel()
         session = nil
+        audioPlayer?.stop()
+        audioPlayer = nil
+        incomingAudioStreams.removeAll()
+        completedAudioQueue.removeAll()
+        audioPlaybackActive = false
+        audioStreamEnabled = false
         connectionState = .idle
     }
 
@@ -64,6 +81,11 @@ final class RemoteSocketClient: ObservableObject {
         reconnectWorkItem = nil
         snapshotPollTask?.cancel()
         snapshotPollTask = nil
+        incomingAudioStreams.removeAll()
+        completedAudioQueue.removeAll()
+        audioPlayer?.stop()
+        audioPlayer = nil
+        audioPlaybackActive = false
 
         connectionState = isReconnect ? .reconnecting : .connecting
 
@@ -86,6 +108,15 @@ final class RemoteSocketClient: ObservableObject {
                 reconnectAttempts = 0
                 connectionState = .connected
                 startSnapshotPolling()
+
+                // Re-apply stream preference after reconnect.
+                if audioStreamEnabled {
+                    do {
+                        _ = try await sendAudioStreamCommand(enabled: true)
+                    } catch {
+                        lastError = "Audio stream enable failed: \(error.localizedDescription)"
+                    }
+                }
 
                 // Snapshot fetch is best-effort; live events can still hydrate state.
                 do {
@@ -196,6 +227,27 @@ final class RemoteSocketClient: ObservableObject {
                 )
             }
 
+        case "audio.start":
+            if let payload, let event: RemoteAudioStartEvent = decode(payload) {
+                incomingAudioStreams[event.streamId] = IncomingAudioStream()
+            }
+
+        case "audio.chunk":
+            if let payload, let event: RemoteAudioChunkEvent = decode(payload) {
+                var stream = incomingAudioStreams[event.streamId] ?? IncomingAudioStream()
+                stream.data.append(event.chunk)
+                incomingAudioStreams[event.streamId] = stream
+            }
+
+        case "audio.end":
+            if let payload, let event: RemoteAudioEndEvent = decode(payload) {
+                let stream = incomingAudioStreams.removeValue(forKey: event.streamId)
+                if event.status == "completed", let data = stream?.data, !data.isEmpty {
+                    completedAudioQueue.append(data)
+                    playNextAudioIfNeeded()
+                }
+            }
+
         default:
             break
         }
@@ -244,6 +296,27 @@ final class RemoteSocketClient: ObservableObject {
     func stopAll() async throws {
         let payload = RemoteStopPayload(scope: "global")
         _ = try await sendCommand(name: "tts.stop", payload: payload, idempotencyKey: UUID().uuidString)
+    }
+
+    func setAudioStreaming(enabled: Bool) async throws {
+        guard case .connected = connectionState else {
+            throw NSError(domain: "RemoteSocket", code: -4, userInfo: [NSLocalizedDescriptionKey: "Not connected"])
+        }
+
+        _ = try await sendAudioStreamCommand(enabled: enabled)
+        audioStreamEnabled = enabled
+        if !enabled {
+            audioPlayer?.stop()
+            audioPlayer = nil
+            incomingAudioStreams.removeAll()
+            completedAudioQueue.removeAll()
+            audioPlaybackActive = false
+        }
+    }
+
+    private func sendAudioStreamCommand(enabled: Bool) async throws -> [String: Any] {
+        let payload = RemoteAudioSetStreamPayload(enabled: enabled)
+        return try await sendCommand(name: "audio.setStream", payload: payload, idempotencyKey: UUID().uuidString)
     }
 
     private func sendCommand<T: Codable>(name: String, payload: T?, idempotencyKey: String?) async throws -> [String: Any] {
@@ -350,6 +423,39 @@ final class RemoteSocketClient: ObservableObject {
                     }
                 }
             }
+        }
+    }
+
+    private func playNextAudioIfNeeded() {
+        guard audioPlayer == nil else { return }
+        guard !completedAudioQueue.isEmpty else {
+            audioPlaybackActive = false
+            return
+        }
+
+        let data = completedAudioQueue.removeFirst()
+        do {
+            let player = try AVAudioPlayer(data: data)
+            player.prepareToPlay()
+            audioPlayer = player
+            audioPlaybackActive = true
+            player.play()
+
+            Task { [weak self] in
+                guard let self else { return }
+                // Polling is sufficient for now and keeps the implementation simple.
+                while let player = self.audioPlayer, player.isPlaying {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                }
+                await MainActor.run {
+                    self.audioPlayer = nil
+                    self.playNextAudioIfNeeded()
+                }
+            }
+        } catch {
+            lastError = "Audio playback failed: \(error.localizedDescription)"
+            audioPlayer = nil
+            playNextAudioIfNeeded()
         }
     }
 

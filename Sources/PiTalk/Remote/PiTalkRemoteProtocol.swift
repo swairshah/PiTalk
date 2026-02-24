@@ -141,6 +141,31 @@ enum PiTalkRemoteIncomingCommand {
     case stop(scope: String?, idempotencyKey: String)
 }
 
+struct PiTalkRemoteAudioStart: Codable, Equatable {
+    let streamId: String
+    let sourceApp: String?
+    let sessionId: String?
+    let pid: Int?
+    let voice: String?
+    let mimeType: String
+}
+
+struct PiTalkRemoteAudioChunk: Codable, Equatable {
+    let streamId: String
+    let chunk: Data
+}
+
+struct PiTalkRemoteAudioEnd: Codable, Equatable {
+    let streamId: String
+    let status: String
+}
+
+enum PiTalkRemoteAudioMirrorEvent {
+    case start(PiTalkRemoteAudioStart)
+    case chunk(PiTalkRemoteAudioChunk)
+    case end(PiTalkRemoteAudioEnd)
+}
+
 struct PiTalkRemoteCommandResult {
     let ok: Bool
     let code: String?

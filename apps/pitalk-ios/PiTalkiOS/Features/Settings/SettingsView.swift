@@ -201,6 +201,30 @@ struct RemoteSettingsView: View {
                     .font(.system(.body, design: .monospaced))
             }
 
+            Toggle(isOn: Binding(
+                get: { store.remoteAudioStreamingRequested },
+                set: { enabled in
+                    store.setRemoteAudioStreaming(enabled: enabled)
+                }
+            )) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Stream voice audio to phone")
+                    Text("Off by default. When off, server sends no audio chunks.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .disabled(store.socket.connectionState != .connected)
+
+            if store.socket.audioPlaybackActive {
+                HStack {
+                    Text("Remote audio")
+                    Spacer()
+                    Text("Playing")
+                        .foregroundStyle(.green)
+                }
+            }
+
             if let err = store.socket.lastError, !err.isEmpty {
                 Text(err)
                     .font(.caption)
