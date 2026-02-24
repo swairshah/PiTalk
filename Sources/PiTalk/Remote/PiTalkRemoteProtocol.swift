@@ -11,9 +11,22 @@ struct PiTalkRemoteServerConfig {
         let env = ProcessInfo.processInfo.environment
         let defaults = UserDefaults.standard
 
-        let host = env["PITALK_REMOTE_BIND"]
-            ?? defaults.string(forKey: "remoteBindHost")
-            ?? "127.0.0.1"
+        let host: String = {
+            // 1. Explicit env var
+            if let envHost = env["PITALK_REMOTE_BIND"], !envHost.isEmpty {
+                return envHost
+            }
+            // 2. UserDefaults
+            if let stored = defaults.string(forKey: "remoteBindHost"), !stored.isEmpty {
+                return stored
+            }
+            // 3. Auto-detect Tailscale — bind to it so iOS can reach us
+            if let tailscaleIP = TailscaleDetector.detectTailscaleIP() {
+                return tailscaleIP
+            }
+            // 4. Loopback fallback
+            return "127.0.0.1"
+        }()
 
         let port: Int = {
             if let envPort = env["PITALK_REMOTE_PORT"], let parsed = Int(envPort), parsed > 0 {
@@ -28,10 +41,20 @@ struct PiTalkRemoteServerConfig {
             ?? ""
 
         let allowInsecureNoAuth: Bool = {
+            // Explicit env var takes priority.
             if let raw = env["PITALK_REMOTE_ALLOW_INSECURE_NO_AUTH"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
                 return raw == "1" || raw == "true" || raw == "yes"
             }
-            return defaults.bool(forKey: "remoteAllowInsecureNoAuth")
+            // Explicit UserDefaults.
+            if defaults.object(forKey: "remoteAllowInsecureNoAuth") != nil {
+                return defaults.bool(forKey: "remoteAllowInsecureNoAuth")
+            }
+            // Auto-allow on Tailscale: the network itself is authenticated
+            // and encrypted (WireGuard), so token auth is optional.
+            if TailscaleDetector.isTailscaleIP(host) {
+                return true
+            }
+            return false
         }()
 
         return PiTalkRemoteServerConfig(
