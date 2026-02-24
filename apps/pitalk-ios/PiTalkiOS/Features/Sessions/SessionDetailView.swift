@@ -175,7 +175,6 @@ struct SessionDetailView: View {
                 Text(currentText)
                     .font(.subheadline)
                     .foregroundStyle(.primary)
-                    .lineLimit(3)
                     .padding(.top, 2)
             }
         }
@@ -191,7 +190,6 @@ struct SessionDetailView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(entry.text)
                 .font(.subheadline)
-                .lineLimit(4)
             HStack {
                 Text(entry.status.capitalized)
                     .font(.caption2.weight(.medium))
@@ -215,7 +213,6 @@ struct SessionDetailView: View {
             VStack(alignment: .trailing, spacing: 4) {
                 Text(msg.text)
                     .font(.subheadline)
-                    .lineLimit(6)
                 Text(relativeDate(msg.timestampMs))
                     .font(.caption2)
                     .foregroundStyle(.white.opacity(0.6))
