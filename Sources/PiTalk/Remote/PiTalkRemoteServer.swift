@@ -329,6 +329,9 @@ final class PiTalkRemoteServer {
         case "session.sendText":
             handleSessionSendText(frame: frame, requestId: requestId, peer: peer)
 
+        case "session.sendScreenshot":
+            handleSessionSendScreenshot(frame: frame, requestId: requestId, peer: peer)
+
         case "tts.speak":
             handleTTSSpeak(frame: frame, requestId: requestId, peer: peer)
 
@@ -398,6 +401,38 @@ final class PiTalkRemoteServer {
         let command = PiTalkRemoteIncomingCommand.sendText(
             sessionKey: payload.sessionKey,
             text: payload.text,
+            idempotencyKey: idempotencyKey
+        )
+        handleAsyncCommand(command, name: name, requestId: requestId, idempotencyKey: idempotencyKey, peer: peer)
+    }
+
+    private func handleSessionSendScreenshot(frame: PiTalkRemoteFrame, requestId: String, peer: PiTalkRemotePeer) {
+        let name = "session.sendScreenshot"
+        guard let idempotencyKey = frame.idempotencyKey, !idempotencyKey.isEmpty else {
+            sendError(name: name, requestId: requestId, code: "BAD_REQUEST", message: "idempotencyKey is required", to: peer)
+            return
+        }
+
+        if let previous = peer.idempotentAckByKey[idempotencyKey] {
+            send(frame: previous, to: peer)
+            return
+        }
+
+        guard
+            let payload = frame.payload?.decode(PiTalkRemoteSessionSendScreenshotPayload.self),
+            !payload.sessionKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            !payload.imageBase64.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            payload.mimeType.hasPrefix("image/")
+        else {
+            sendError(name: name, requestId: requestId, code: "BAD_REQUEST", message: "sessionKey, imageBase64, and image mimeType are required", to: peer)
+            return
+        }
+
+        let command = PiTalkRemoteIncomingCommand.sendScreenshot(
+            sessionKey: payload.sessionKey,
+            imageBase64: payload.imageBase64,
+            mimeType: payload.mimeType,
+            note: payload.note,
             idempotencyKey: idempotencyKey
         )
         handleAsyncCommand(command, name: name, requestId: requestId, idempotencyKey: idempotencyKey, peer: peer)

@@ -250,6 +250,13 @@ struct PiTalkRemoteSessionSendTextPayload: Codable {
     let text: String
 }
 
+struct PiTalkRemoteSessionSendScreenshotPayload: Codable {
+    let sessionKey: String
+    let imageBase64: String
+    let mimeType: String
+    let note: String?
+}
+
 struct PiTalkRemoteTTSSpeakPayload: Codable {
     let text: String
     let voice: String?

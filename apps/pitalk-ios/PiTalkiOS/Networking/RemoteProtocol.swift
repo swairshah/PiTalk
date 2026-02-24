@@ -81,6 +81,13 @@ struct RemoteSendTextPayload: Codable {
     let text: String
 }
 
+struct RemoteSendScreenshotPayload: Codable {
+    let sessionKey: String
+    let imageBase64: String
+    let mimeType: String
+    let note: String?
+}
+
 struct RemoteSpeakPayload: Codable {
     let text: String
     let voice: String?

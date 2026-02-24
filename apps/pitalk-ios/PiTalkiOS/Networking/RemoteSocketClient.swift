@@ -301,6 +301,16 @@ final class RemoteSocketClient: ObservableObject {
         _ = try await sendCommand(name: "session.sendText", payload: payload, idempotencyKey: UUID().uuidString)
     }
 
+    func sendScreenshot(sessionKey: String, imageData: Data, mimeType: String, note: String?) async throws {
+        let payload = RemoteSendScreenshotPayload(
+            sessionKey: sessionKey,
+            imageBase64: imageData.base64EncodedString(),
+            mimeType: mimeType,
+            note: note
+        )
+        _ = try await sendCommand(name: "session.sendScreenshot", payload: payload, idempotencyKey: UUID().uuidString)
+    }
+
     func speak(text: String, voice: String? = nil) async throws {
         let payload = RemoteSpeakPayload(text: text, voice: voice, sourceApp: "pitalk-ios", sessionId: "iphone", pid: nil)
         _ = try await sendCommand(name: "tts.speak", payload: payload, idempotencyKey: UUID().uuidString)

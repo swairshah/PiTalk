@@ -137,6 +137,7 @@ struct PiTalkRemoteSnapshot: Codable, Equatable {
 
 enum PiTalkRemoteIncomingCommand {
     case sendText(sessionKey: String, text: String, idempotencyKey: String)
+    case sendScreenshot(sessionKey: String, imageBase64: String, mimeType: String, note: String?, idempotencyKey: String)
     case speak(text: String, voice: String?, sourceApp: String?, sessionId: String?, pid: Int?, idempotencyKey: String)
     case stop(scope: String?, idempotencyKey: String)
 }

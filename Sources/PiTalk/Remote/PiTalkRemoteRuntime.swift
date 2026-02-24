@@ -224,6 +224,9 @@ final class PiTalkRemoteRuntime {
         case .sendText(let sessionKey, let text, _):
             return await handleSendText(sessionKey: sessionKey, text: text)
 
+        case .sendScreenshot(let sessionKey, let imageBase64, let mimeType, let note, _):
+            return await handleSendScreenshot(sessionKey: sessionKey, imageBase64: imageBase64, mimeType: mimeType, note: note)
+
         case let .speak(text, voice, sourceApp, sessionId, pid, _):
             return handleSpeak(text: text, voice: voice, sourceApp: sourceApp, sessionId: sessionId, pid: pid)
 
@@ -289,5 +292,82 @@ final class PiTalkRemoteRuntime {
         }
 
         return .failure(code: "DELIVERY_FAILED", message: result.message ?? "Failed to deliver text")
+    }
+
+    private func handleSendScreenshot(
+        sessionKey: String,
+        imageBase64: String,
+        mimeType: String,
+        note: String?
+    ) async -> PiTalkRemoteCommandResult {
+        guard let session = monitor.sessions.first(where: { $0.id == sessionKey }) else {
+            return .failure(code: "SESSION_NOT_FOUND", message: "Unknown session key: \(sessionKey)")
+        }
+
+        guard let pid = session.pid else {
+            return .failure(code: "SESSION_NOT_ROUTABLE", message: "Selected session has no pid")
+        }
+
+        guard let imageData = Data(base64Encoded: imageBase64, options: [.ignoreUnknownCharacters]), !imageData.isEmpty else {
+            return .failure(code: "BAD_REQUEST", message: "imageBase64 is invalid")
+        }
+
+        // Keep remote payload bounded so one request cannot flood disk/memory.
+        if imageData.count > 8 * 1024 * 1024 {
+            return .failure(code: "PAYLOAD_TOO_LARGE", message: "image exceeds 8MB limit")
+        }
+
+        guard let imagePath = persistScreenshotForSession(imageData: imageData, mimeType: mimeType, pid: pid) else {
+            return .failure(code: "INTERNAL_ERROR", message: "Failed to persist screenshot")
+        }
+
+        let trimmedNote = note?.trimmingCharacters(in: .whitespacesAndNewlines)
+        var message = "PiTalk iOS screenshot attached. Please inspect this image file and help the user.\nImage path: \(imagePath)"
+        if let trimmedNote, !trimmedNote.isEmpty {
+            message += "\nUser note: \(trimmedNote)"
+        }
+
+        let result: SendHandler.SendResult = await withCheckedContinuation { continuation in
+            SendHandler.send(pid: pid, tty: session.tty, mux: session.mux, text: message) { sendResult in
+                continuation.resume(returning: sendResult)
+            }
+        }
+
+        if result.success {
+            return .success(payload: [
+                "delivered": true,
+                "pid": pid,
+                "sessionKey": sessionKey,
+                "imagePath": imagePath,
+                "message": result.message as Any,
+            ])
+        }
+
+        return .failure(code: "DELIVERY_FAILED", message: result.message ?? "Failed to deliver screenshot")
+    }
+
+    private func persistScreenshotForSession(imageData: Data, mimeType: String, pid: Int) -> String? {
+        let ext: String
+        if mimeType.lowercased().contains("png") {
+            ext = "png"
+        } else if mimeType.lowercased().contains("heic") {
+            ext = "heic"
+        } else {
+            ext = "jpg"
+        }
+
+        let baseDir = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".pi/agent/pitalk-inbox-media")
+            .appendingPathComponent("\(pid)")
+
+        do {
+            try FileManager.default.createDirectory(at: baseDir, withIntermediateDirectories: true)
+            let filename = "\(pitalkRemoteCurrentTimestampMs())-\(UUID().uuidString).\(ext)"
+            let fileURL = baseDir.appendingPathComponent(filename)
+            try imageData.write(to: fileURL, options: .atomic)
+            return fileURL.path
+        } catch {
+            return nil
+        }
     }
 }

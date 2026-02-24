@@ -106,6 +106,26 @@ Behavior:
 - Writes into target Pi inbox path for mapped PID/session.
 - Returns ack with delivery result.
 
+## `session.sendScreenshot`
+
+Payload:
+
+```json
+{
+  "sessionKey": "pi::session-abc",
+  "imageBase64": "<base64-jpeg-or-png>",
+  "mimeType": "image/jpeg",
+  "note": "Optional user note",
+  "idempotencyKey": "idem-456"
+}
+```
+
+Behavior:
+
+- Server stores the screenshot to a local file under `~/.pi/agent/pitalk-inbox-media/<pid>/...`.
+- Server sends a text message into the target Pi session that includes the saved image path, so the agent can inspect the image.
+- Returns ack with `imagePath` when delivered.
+
 ## `tts.speak`
 
 Payload:

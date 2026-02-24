@@ -51,6 +51,21 @@ final class PiTalkRemoteWireTests: XCTestCase {
         XCTAssertEqual(decoded?.pid, 42)
     }
 
+    func testCommandPayloadDecodeSessionSendScreenshot() {
+        let payload: JSONValue = .object([
+            "sessionKey": .string("pi::main"),
+            "imageBase64": .string("Zm9v"),
+            "mimeType": .string("image/jpeg"),
+            "note": .string("check this"),
+        ])
+
+        let decoded = payload.decode(PiTalkRemoteSessionSendScreenshotPayload.self)
+        XCTAssertEqual(decoded?.sessionKey, "pi::main")
+        XCTAssertEqual(decoded?.imageBase64, "Zm9v")
+        XCTAssertEqual(decoded?.mimeType, "image/jpeg")
+        XCTAssertEqual(decoded?.note, "check this")
+    }
+
     func testJSONValueFromAnyDictionary() throws {
         let input: [String: Any] = [
             "ok": true,
