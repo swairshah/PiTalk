@@ -161,7 +161,7 @@ final class AppStore: ObservableObject {
         guard !text.isEmpty else { return }
         guard let sessionId = selectedSessionId else { return }
 
-        let msg = SentMessage(text: text)
+        let msg = SentMessage(kind: .text(text))
         sentMessages[sessionId, default: []].append(msg)
 
         Task {
@@ -171,6 +171,24 @@ final class AppStore: ObservableObject {
             } catch {
                 // Keep text in field so user can retry.
             }
+        }
+    }
+
+    func sendScreenshotToSelectedSession(imageData: Data, note: String? = nil) async {
+        guard let sessionId = selectedSessionId else { return }
+
+        do {
+            try await socket.sendScreenshot(
+                sessionKey: sessionId,
+                imageData: imageData,
+                mimeType: "image/jpeg",
+                note: note
+            )
+
+            let marker = SentMessage(kind: .screenshot(note: note))
+            sentMessages[sessionId, default: []].append(marker)
+        } catch {
+            // Keep silent here; connection/error state is already surfaced by socket.
         }
     }
 
@@ -228,7 +246,24 @@ final class AppStore: ObservableObject {
 // MARK: - Sent Message
 
 struct SentMessage: Identifiable {
+    enum Kind {
+        case text(String)
+        case screenshot(note: String?)
+    }
+
     let id = UUID()
-    let text: String
+    let kind: Kind
     let timestampMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+
+    var text: String {
+        switch kind {
+        case .text(let value):
+            return value
+        case .screenshot(let note):
+            if let note, !note.isEmpty {
+                return "📷 Screenshot sent — \(note)"
+            }
+            return "📷 Screenshot sent"
+        }
+    }
 }

@@ -1,4 +1,6 @@
+import PhotosUI
 import SwiftUI
+import UIKit
 
 /// A unified timeline item that merges TTS history and user-sent messages.
 private enum TimelineItem: Identifiable {
@@ -25,6 +27,8 @@ struct SessionDetailView: View {
     let sessionId: String
 
     @StateObject private var ptt = PushToTalkController()
+    @State private var selectedScreenshotItem: PhotosPickerItem?
+    @State private var pendingScreenshotData: Data?
 
     private var session: RemoteSession? {
         store.socket.snapshot.sessions.first(where: { $0.id == sessionId })
@@ -125,6 +129,12 @@ struct SessionDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             store.selectedSessionId = sessionId
+        }
+        .onChange(of: selectedScreenshotItem) { _, item in
+            guard let item else { return }
+            Task {
+                await loadSelectedScreenshot(item)
+            }
         }
     }
 
@@ -230,8 +240,38 @@ struct SessionDetailView: View {
         !store.draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private var hasPendingScreenshot: Bool {
+        pendingScreenshotData != nil
+    }
+
+    private var hasOutgoingContent: Bool {
+        hasDraft || hasPendingScreenshot
+    }
+
     private var composeBar: some View {
         VStack(spacing: 8) {
+            if hasPendingScreenshot {
+                HStack(spacing: 8) {
+                    Image(systemName: "photo")
+                        .font(.caption)
+                    Text("Screenshot ready")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button {
+                        pendingScreenshotData = nil
+                        selectedScreenshotItem = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+            }
+
             TextField("Message…", text: $store.draftText, axis: .vertical)
                 .font(.subheadline)
                 .lineLimit(2...4)
@@ -241,18 +281,30 @@ struct SessionDetailView: View {
 
             HStack(spacing: 8) {
                 Button {
-                    store.selectedSessionId = sessionId
-                    store.sendDraftToSelectedSession()
+                    Task {
+                        await sendComposePayload()
+                    }
                 } label: {
                     Label("Send", systemImage: "paperplane.fill")
                         .font(.caption.weight(.semibold))
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
                 }
-                .foregroundStyle(hasDraft ? .white : .secondary)
-                .background(hasDraft ? Color.blue : Color.clear, in: Capsule())
-                .overlay(Capsule().strokeBorder(.quaternary, lineWidth: hasDraft ? 0 : 1))
-                .disabled(!hasDraft)
+                .foregroundStyle(hasOutgoingContent ? .white : .secondary)
+                .background(hasOutgoingContent ? Color.blue : Color.clear, in: Capsule())
+                .overlay(Capsule().strokeBorder(.quaternary, lineWidth: hasOutgoingContent ? 0 : 1))
+                .disabled(!hasOutgoingContent)
+                .buttonStyle(.plain)
+
+                PhotosPicker(selection: $selectedScreenshotItem, matching: .images, photoLibrary: .shared()) {
+                    Label("Photo", systemImage: "photo")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                }
+                .foregroundStyle(.primary)
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay(Capsule().strokeBorder(.quaternary, lineWidth: 1))
                 .buttonStyle(.plain)
 
                 Spacer()
@@ -271,6 +323,33 @@ struct SessionDetailView: View {
                     }
                 )
             }
+        }
+    }
+
+    private func loadSelectedScreenshot(_ item: PhotosPickerItem) async {
+        defer { selectedScreenshotItem = nil }
+        guard let rawData = try? await item.loadTransferable(type: Data.self), !rawData.isEmpty else {
+            return
+        }
+
+        // Normalize to JPEG so the remote server can persist a single format.
+        if let image = UIImage(data: rawData), let converted = image.jpegData(compressionQuality: 0.82) {
+            pendingScreenshotData = converted
+        } else {
+            pendingScreenshotData = rawData
+        }
+    }
+
+    private func sendComposePayload() async {
+        store.selectedSessionId = sessionId
+
+        if hasDraft {
+            store.sendDraftToSelectedSession()
+        }
+
+        if let pendingScreenshotData {
+            await store.sendScreenshotToSelectedSession(imageData: pendingScreenshotData)
+            self.pendingScreenshotData = nil
         }
     }
 
