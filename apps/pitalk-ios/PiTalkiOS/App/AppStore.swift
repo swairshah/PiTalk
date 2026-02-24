@@ -100,6 +100,7 @@ final class AppStore: ObservableObject {
         sentMessages.removeAll()
         selectedSessionId = nil
         remoteAudioStreamingRequested = false
+        socket.resetAudioStreamingPreference()
         saveProfiles()
         socket.connect(url: url, token: profile.token)
     }

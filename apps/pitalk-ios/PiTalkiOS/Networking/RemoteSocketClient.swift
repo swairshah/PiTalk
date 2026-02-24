@@ -71,6 +71,15 @@ final class RemoteSocketClient: ObservableObject {
         openSocket(isReconnect: true)
     }
 
+    func resetAudioStreamingPreference() {
+        audioStreamEnabled = false
+        incomingAudioStreams.removeAll()
+        completedAudioQueue.removeAll()
+        audioPlayer?.stop()
+        audioPlayer = nil
+        audioPlaybackActive = false
+    }
+
     private func openSocket(isReconnect: Bool) {
         guard let endpointURL else {
             connectionState = .failed("Missing endpoint URL")
@@ -106,6 +115,7 @@ final class RemoteSocketClient: ObservableObject {
                 // Mark connected as soon as auth handshake succeeds so UI doesn't
                 // stay stuck in "Connecting" if snapshot fetch is delayed.
                 reconnectAttempts = 0
+                lastError = nil
                 connectionState = .connected
                 startSnapshotPolling()
 
@@ -189,6 +199,9 @@ final class RemoteSocketClient: ObservableObject {
         // Any authenticated event implies we're connected.
         if connectionState != .connected {
             connectionState = .connected
+        }
+        if lastError != nil {
+            lastError = nil
         }
 
         guard let name = frame["name"] as? String else { return }
@@ -305,6 +318,7 @@ final class RemoteSocketClient: ObservableObject {
 
         _ = try await sendAudioStreamCommand(enabled: enabled)
         audioStreamEnabled = enabled
+        lastError = nil
         if !enabled {
             audioPlayer?.stop()
             audioPlayer = nil
@@ -435,6 +449,10 @@ final class RemoteSocketClient: ObservableObject {
 
         let data = completedAudioQueue.removeFirst()
         do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            try session.setActive(true)
+
             let player = try AVAudioPlayer(data: data)
             player.prepareToPlay()
             audioPlayer = player

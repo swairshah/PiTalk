@@ -202,7 +202,7 @@ struct RemoteSettingsView: View {
             }
 
             Toggle(isOn: Binding(
-                get: { store.remoteAudioStreamingRequested },
+                get: { store.socket.audioStreamEnabled },
                 set: { enabled in
                     store.setRemoteAudioStreaming(enabled: enabled)
                 }
