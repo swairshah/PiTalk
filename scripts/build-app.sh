@@ -82,6 +82,8 @@ cat > "$APP_DIR/Contents/Info.plist" << EOF
     <string>Copyright © 2026. All rights reserved.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>PiTalk monitors microphone activity to pause speech when you're talking.</string>
 </dict>
 </plist>
 EOF

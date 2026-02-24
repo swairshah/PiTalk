@@ -1968,6 +1968,58 @@ struct SessionRowView: View {
 
 // MARK: - Settings Tab (renamed from General)
 
+// MARK: - Settings UI Components
+
+/// Section header with uppercase text and line
+struct SettingsSectionHeader: View {
+    let title: String
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(title.uppercased())
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.secondary)
+                .tracking(0.5)
+            
+            Rectangle()
+                .fill(Color.secondary.opacity(0.2))
+                .frame(height: 1)
+        }
+        .padding(.top, 8)
+        .padding(.bottom, 4)
+    }
+}
+
+/// A single settings row with label on left, control on right
+struct SettingsRow<Content: View>: View {
+    let label: String
+    let subtitle: String?
+    @ViewBuilder let content: () -> Content
+    
+    init(_ label: String, subtitle: String? = nil, @ViewBuilder content: @escaping () -> Content) {
+        self.label = label
+        self.subtitle = subtitle
+        self.content = content
+    }
+    
+    var body: some View {
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label)
+                    .font(.body)
+                if let subtitle = subtitle {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            Spacer()
+            content()
+        }
+        .padding(.vertical, 10)
+    }
+}
+
 struct SettingsTabView: View {
     @AppStorage("ttsProvider") var provider = "elevenlabs"
     @AppStorage("ttsVoice") var voice = "ally"
@@ -2018,179 +2070,174 @@ struct SettingsTabView: View {
     }
     
     var body: some View {
-        Form {
-            Section("TTS Provider") {
-                Picker("Provider", selection: $provider) {
-                    Text("ElevenLabs").tag("elevenlabs")
-                    Text("Google Cloud").tag("google")
-                }
-                .pickerStyle(.segmented)
-                .onChange(of: provider) { newValue in
-                    // Reset voice to default for the new provider
-                    if newValue == "elevenlabs" && !elevenLabsVoices.contains(voice) {
-                        voice = "ally"
-                    } else if newValue == "google" && !googleVoices.contains(voice) {
-                        voice = "george"
-                    }
-                }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                // TTS PROVIDER
+                SettingsSectionHeader(title: "TTS Provider")
                 
-                if currentProvider == .elevenlabs {
-                    Text("Scottish & British accents • Streaming support • Best quality")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                } else {
-                    Text("British & Australian accents • No streaming • Good quality")
+                VStack(alignment: .leading, spacing: 12) {
+                    Picker("Provider", selection: $provider) {
+                        Text("ElevenLabs").tag("elevenlabs")
+                        Text("Google Cloud").tag("google")
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .onChange(of: provider) { newValue in
+                        if newValue == "elevenlabs" && !elevenLabsVoices.contains(voice) {
+                            voice = "ally"
+                        } else if newValue == "google" && !googleVoices.contains(voice) {
+                            voice = "george"
+                        }
+                    }
+                    
+                    Text(currentProvider == .elevenlabs 
+                        ? "Scottish & British accents • Streaming support • Best quality"
+                        : "British & Australian accents • No streaming • Good quality")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
-            }
-            
-            if currentProvider == .elevenlabs {
-                Section("ElevenLabs API") {
+                .padding(.vertical, 10)
+                
+                // API KEY
+                SettingsSectionHeader(title: currentProvider == .elevenlabs ? "ElevenLabs API" : "Google Cloud API")
+                
+                VStack(alignment: .leading, spacing: 12) {
                     if !hasApiKey {
-                        Text("Add your ElevenLabs API key to start using PiTalk.")
+                        Text(currentProvider == .elevenlabs 
+                            ? "Add your ElevenLabs API key to start using PiTalk."
+                            : "Add your Google Cloud API key to start using PiTalk.")
                             .font(.subheadline)
                             .foregroundColor(.orange)
                     }
-
-                    HStack {
-                        if showApiKey {
-                            TextField("API Key", text: $elevenLabsApiKey)
-                                .textFieldStyle(.roundedBorder)
-                        } else {
-                            SecureField("API Key", text: $elevenLabsApiKey)
-                                .textFieldStyle(.roundedBorder)
+                    
+                    HStack(spacing: 8) {
+                        Group {
+                            if showApiKey {
+                                TextField("API Key", text: currentProvider == .elevenlabs ? $elevenLabsApiKey : $googleApiKey)
+                            } else {
+                                SecureField("API Key", text: currentProvider == .elevenlabs ? $elevenLabsApiKey : $googleApiKey)
+                            }
                         }
+                        .textFieldStyle(.plain)
+                        .padding(8)
+                        .background(Color(NSColor.textBackgroundColor))
+                        .cornerRadius(6)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
+                        )
+                        
                         Button(showApiKey ? "Hide" : "Show") {
                             showApiKey.toggle()
                         }
-                        .buttonStyle(.borderless)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                     }
-
-                    HStack(spacing: 8) {
+                    
+                    HStack(spacing: 12) {
                         Button("Import from ~/.env") {
-                            importElevenLabsApiKey()
+                            if currentProvider == .elevenlabs {
+                                importElevenLabsApiKey()
+                            } else {
+                                importGoogleApiKey()
+                            }
                         }
                         .buttonStyle(.bordered)
-
-                        Text("Looks for ELEVEN_API_KEY or ELEVENLABS_API_KEY")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                        .controlSize(.small)
+                        
+                        Text(currentProvider == .elevenlabs 
+                            ? "Looks for ELEVEN_API_KEY or ELEVENLABS_API_KEY"
+                            : "Looks for GOOGLE_TTS_API_KEY")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
-
+                    
                     if let envImportMessage {
                         Text(envImportMessage)
                             .font(.caption)
                             .foregroundStyle(envImportMessageColor)
                     }
                     
-                    if hasApiKey {
-                        Text("API key configured ✓")
-                            .font(.caption)
-                            .foregroundColor(.green)
-                    } else {
-                        Text("Get your API key from elevenlabs.io")
-                            .font(.caption)
-                            .foregroundColor(.orange)
+                    HStack(spacing: 4) {
+                        if hasApiKey {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.green)
+                                .font(.caption)
+                            Text("API key configured")
+                                .font(.caption)
+                                .foregroundColor(.green)
+                        } else {
+                            Image(systemName: "arrow.up.right")
+                                .foregroundColor(.orange)
+                                .font(.caption)
+                            Text(currentProvider == .elevenlabs 
+                                ? "Get your API key from elevenlabs.io"
+                                : "Get your API key from console.cloud.google.com")
+                                .font(.caption)
+                                .foregroundColor(.orange)
+                        }
                     }
                 }
-            } else {
-                Section("Google Cloud API") {
-                    if !hasApiKey {
-                        Text("Add your Google Cloud API key to start using PiTalk.")
-                            .font(.subheadline)
-                            .foregroundColor(.orange)
-                    }
-
-                    HStack {
-                        if showApiKey {
-                            TextField("API Key", text: $googleApiKey)
-                                .textFieldStyle(.roundedBorder)
-                        } else {
-                            SecureField("API Key", text: $googleApiKey)
-                                .textFieldStyle(.roundedBorder)
+                .padding(.vertical, 10)
+                
+                // VOICE
+                SettingsSectionHeader(title: "Voice")
+                
+                SettingsRow("Voice", subtitle: currentProvider == .google ? voiceDescription(voice) : nil) {
+                    HStack(spacing: 12) {
+                        Picker("", selection: $voice) {
+                            ForEach(availableVoices, id: \.self) { v in
+                                Text(v.capitalized).tag(v)
+                            }
                         }
-                        Button(showApiKey ? "Hide" : "Show") {
-                            showApiKey.toggle()
-                        }
-                        .buttonStyle(.borderless)
-                    }
-
-                    HStack(spacing: 8) {
-                        Button("Import from ~/.env") {
-                            importGoogleApiKey()
+                        .labelsHidden()
+                        .frame(width: 120)
+                        
+                        Button(isPreviewPlaying ? "Playing…" : "Preview") {
+                            previewVoice(voice)
                         }
                         .buttonStyle(.bordered)
-
-                        Text("Looks for GOOGLE_TTS_API_KEY")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                        .controlSize(.small)
+                        .disabled(isPreviewPlaying || !hasApiKey)
                     }
-
-                    if let envImportMessage {
-                        Text(envImportMessage)
-                            .font(.caption)
-                            .foregroundStyle(envImportMessageColor)
-                    }
-                    
-                    if hasApiKey {
-                        Text("API key configured ✓")
-                            .font(.caption)
-                            .foregroundColor(.green)
-                    } else {
-                        Text("Get your API key from console.cloud.google.com")
-                            .font(.caption)
-                            .foregroundColor(.orange)
-                    }
-                }
-            }
-
-            Section("Voice") {
-                HStack {
-                    Picker("Voice", selection: $voice) {
-                        ForEach(availableVoices, id: \.self) { v in
-                            Text(v.capitalized).tag(v)
-                        }
-                    }
-                    .pickerStyle(.menu)
-
-                    Spacer()
-
-                    Button(isPreviewPlaying ? "Playing…" : "Preview") {
-                        previewVoice(voice)
-                    }
-                    .disabled(isPreviewPlaying || !hasApiKey)
                 }
                 
-                if currentProvider == .google {
-                    Text(voiceDescription(voice))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                // GENERAL
+                SettingsSectionHeader(title: "General")
+                
+                SettingsRow("Launch at Login") {
+                    Toggle("", isOn: $launchAtLogin)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .onChange(of: launchAtLogin) { newValue in
+                            setLaunchAtLogin(enabled: newValue)
+                        }
                 }
-            }
-
-            Section("General") {
-                Toggle("Launch at Login", isOn: $launchAtLogin)
-                    .onChange(of: launchAtLogin) { newValue in
-                        setLaunchAtLogin(enabled: newValue)
-                    }
-
-                Toggle("Show Dock Icon", isOn: $showDockIcon)
-                    .onChange(of: showDockIcon) { _ in
-                        updateDockIcon()
-                    }
-            }
-
-            Section("Shortcut") {
-                HStack {
-                    Text("Stop Speech")
-                        .foregroundColor(.secondary)
-                    Spacer()
+                
+                SettingsRow("Show Dock Icon") {
+                    Toggle("", isOn: $showDockIcon)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .onChange(of: showDockIcon) { _ in
+                            updateDockIcon()
+                        }
+                }
+                
+                // SHORTCUTS
+                SettingsSectionHeader(title: "Keyboard Shortcuts")
+                
+                SettingsRow("Stop Speech") {
                     KeyboardShortcutView(keys: ["⌘", "."])
                 }
+                
+                Spacer(minLength: 20)
             }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
         }
-        .formStyle(.grouped)
+
     }
     
     func voiceDescription(_ voice: String) -> String {
@@ -2506,7 +2553,6 @@ struct HistoryView: View {
                 }
             }
             .padding()
-            .background(Color(NSColor.windowBackgroundColor))
 
             Divider()
 
@@ -2915,7 +2961,6 @@ struct AboutView: View {
             }
             .padding()
         }
-        .background(Color(NSColor.windowBackgroundColor))
     }
 }
 
@@ -2959,20 +3004,19 @@ struct KeyboardShortcutView: View {
     let keys: [String]
 
     var body: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: 4) {
             ForEach(keys, id: \.self) { key in
                 Text(key)
-                    .font(.system(.caption, design: .rounded, weight: .medium))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
                     .background(
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(Color(NSColor.controlBackgroundColor))
-                            .shadow(color: .black.opacity(0.1), radius: 0.5, y: 0.5)
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color(NSColor.textBackgroundColor))
                     )
                     .overlay(
-                        RoundedRectangle(cornerRadius: 4)
-                            .stroke(Color.secondary.opacity(0.3), lineWidth: 0.5)
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
                     )
             }
         }
