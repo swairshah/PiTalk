@@ -55,6 +55,11 @@ Use a single source of truth store for:
 - [ ] Reconnect + resume-from-seq support.
 - [ ] Push-to-talk text send path.
 
+## iOS TODO
+
+- [ ] Add end-to-end protocol conformance checks from iOS client perspective (idempotency retry behavior, replay/resumeFromSeq recovery, heartbeat timeout/reconnect assertions).
+- [ ] Add lightweight integration harness for command routing (`session.sendText`, `tts.speak`, `tts.stop`) against a scripted local PiTalk remote server fixture.
+
 ## Notes
 
 Protocol details live in `docs/REMOTE_WS_PROTOCOL.md`.
