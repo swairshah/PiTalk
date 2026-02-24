@@ -3,23 +3,43 @@ import SwiftUI
 struct SessionsView: View {
     @EnvironmentObject private var store: AppStore
 
-    /// Sessions grouped by project, sorted by most recent activity (latest first).
-    private var groupedSessions: [(key: String, sessions: [RemoteSession])] {
-        let dict = Dictionary(grouping: store.socket.snapshot.sessions) { session in
+    /// Stable group key ordering — only mutated when groups are added/removed.
+    @State private var groupOrder: [String] = []
+
+    /// Sessions grouped by project key.
+    private var groupedDict: [String: [RemoteSession]] {
+        Dictionary(grouping: store.socket.snapshot.sessions) { session in
             session.sessionId ?? session.cwd ?? session.sourceApp
         }
-        return dict.map { (key: $0.key, sessions: $0.value) }
-            .sorted { a, b in
-                let aLatest = a.sessions.compactMap(\.lastSpokenAtMs).max() ?? 0
-                let bLatest = b.sessions.compactMap(\.lastSpokenAtMs).max() ?? 0
-                return aLatest > bLatest
+    }
+
+    /// Groups in stable order: existing groups keep position, new groups are appended.
+    private var sortedGroups: [(key: String, sessions: [RemoteSession])] {
+        let dict = groupedDict
+        var result: [(key: String, sessions: [RemoteSession])] = []
+        for key in groupOrder {
+            if let sessions = dict[key] {
+                result.append((key: key, sessions: sessions))
             }
+        }
+        // Append any brand-new keys not yet tracked.
+        let tracked = Set(groupOrder)
+        for key in dict.keys.sorted() where !tracked.contains(key) {
+            if let sessions = dict[key] {
+                result.append((key: key, sessions: sessions))
+            }
+        }
+        return result
+    }
+
+    /// The set of current group keys — used to detect when groups are added/removed.
+    private var currentGroupKeys: Set<String> {
+        Set(groupedDict.keys)
     }
 
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 10) {
-                // Compact status bar: connection + metrics in one row
                 statusBar
 
                 if store.socket.snapshot.sessions.isEmpty {
@@ -28,7 +48,7 @@ struct SessionsView: View {
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 10) {
-                            ForEach(groupedSessions, id: \.key) { group in
+                            ForEach(sortedGroups, id: \.key) { group in
                                 SessionGroupSection(
                                     groupKey: group.key,
                                     sessions: group.sessions,
@@ -51,6 +71,31 @@ struct SessionsView: View {
             .navigationDestination(for: String.self) { sessionId in
                 SessionDetailView(sessionId: sessionId)
             }
+            .onAppear { stabilizeGroupOrder() }
+            .onChange(of: currentGroupKeys) { _, _ in stabilizeGroupOrder() }
+        }
+    }
+
+    /// Keep existing group positions; only insert new keys and prune dead ones.
+    private func stabilizeGroupOrder() {
+        let dict = groupedDict
+        let liveKeys = Set(dict.keys)
+
+        // Keep existing order, drop groups that disappeared.
+        var updated = groupOrder.filter { liveKeys.contains($0) }
+
+        // Append new groups sorted by most-recent-activity then alphabetically.
+        let existing = Set(updated)
+        let newKeys = liveKeys.subtracting(existing).sorted { a, b in
+            let aLatest = dict[a]?.compactMap(\.lastSpokenAtMs).max() ?? 0
+            let bLatest = dict[b]?.compactMap(\.lastSpokenAtMs).max() ?? 0
+            if aLatest != bLatest { return aLatest > bLatest }
+            return a.localizedCaseInsensitiveCompare(b) == .orderedAscending
+        }
+        updated.append(contentsOf: newKeys)
+
+        if updated != groupOrder {
+            groupOrder = updated
         }
     }
 
@@ -61,9 +106,17 @@ struct SessionsView: View {
                 .fill(bannerColor)
                 .frame(width: 8, height: 8)
 
-            Text(bannerText)
-                .font(.caption.weight(.medium))
-                .lineLimit(1)
+            VStack(alignment: .leading, spacing: 1) {
+                if let profile = store.activeProfile {
+                    Text(profile.displayName)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                }
+                Text(bannerText)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
 
             Spacer(minLength: 4)
 
@@ -217,8 +270,10 @@ private struct SessionGroupSection: View {
             }
 
             if isExpanded {
+                // Stable sort by pid so sessions don't jump around between polls.
+                let stableSessions = sessions.sorted { ($0.pid ?? 0) < ($1.pid ?? 0) }
                 VStack(spacing: 1) {
-                    ForEach(sessions) { session in
+                    ForEach(stableSessions) { session in
                         NavigationLink(value: session.id) {
                             CompactSessionRow(session: session)
                         }
