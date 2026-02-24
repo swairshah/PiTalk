@@ -323,26 +323,42 @@ private struct SessionGroupSection: View {
 private struct CompactSessionRow: View {
     let session: RemoteSession
 
+    private var snippet: String? {
+        session.currentText ?? session.lastSpokenText
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             Circle()
                 .fill(activityColor(session.activity))
-                .frame(width: 6, height: 6)
+                .frame(width: 7, height: 7)
 
-            if let mux = session.mux, !mux.isEmpty {
-                Text(mux)
-                    .font(.caption.weight(.medium))
-                    .lineLimit(1)
-            } else {
-                Text(session.sourceApp)
-                    .font(.caption.weight(.medium))
-                    .lineLimit(1)
-            }
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    if let mux = session.mux, !mux.isEmpty {
+                        Text(mux)
+                            .font(.subheadline.weight(.medium))
+                            .lineLimit(1)
+                    } else {
+                        Text(session.sourceApp)
+                            .font(.subheadline.weight(.medium))
+                            .lineLimit(1)
+                    }
 
-            if let pid = session.pid {
-                Text("pid \(pid)")
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.tertiary)
+                    // Show pid only when there's no message to display
+                    if snippet == nil, let pid = session.pid {
+                        Text("pid \(pid)")
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+
+                if let text = snippet {
+                    Text(text)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
             }
 
             Spacer(minLength: 4)
@@ -355,16 +371,16 @@ private struct CompactSessionRow: View {
 
             Text(session.activityLabel)
                 .font(.caption2.weight(.medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(activityColor(session.activity))
                 .lineLimit(1)
 
             Image(systemName: "chevron.right")
                 .font(.caption2)
                 .foregroundStyle(.quaternary)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
     }
 
     private func activityColor(_ activity: String) -> Color {
