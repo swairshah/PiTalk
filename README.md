@@ -4,9 +4,14 @@ PiTalk is a macOS menu bar app that acts as a local voice hub.
 
 It’s great with Pi, but it’s not Pi-only any app can send text to PiTalk’s local broker and have it spoken through the same centralized queue + playback system.
 
-<p align="center">
-  <img src="docs/pitalk-screenshot.png" alt="PiTalk screenshot" width="600" />
-</p>
+| PiTalk macOS menu bar app | PiTalk iOS companion app |
+|---|---|
+| <img src="docs/pitalk-screenshot.png" alt="PiTalk macOS screenshot" width="100%" /> | <img src="docs/pitalk-ios-screenshot.png" alt="PiTalk iOS screenshot" width="100%" /> |
+
+For the iPhone companion app docs, see:
+
+- `apps/pitalk-ios/README.md`
+- `apps/pitalk-ios/SETUP.md`
 
 ## Install with Homebrew
 

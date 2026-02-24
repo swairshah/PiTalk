@@ -1,65 +1,46 @@
-# PiTalk iOS App (Scaffold)
+# PiTalk iOS App
 
-This folder is intentionally isolated so it can be removed without affecting core PiTalk.
+This app is an iPhone companion for the PiTalk macOS host over Tailscale/WebSocket.
 
-## Scope
+It is intentionally isolated under `apps/pitalk-ios/` so it can be changed or removed without affecting the macOS app.
 
-Companion app for PiTalk macOS host over Tailscale:
+## Current features
 
-- View active sessions
-- View live status/events
-- Send text to a selected session
+- Connect to PiTalk remote server profiles (`ws://<host>:18082/ws`)
+- Auth handshake + reconnect behavior
+- Sessions list + session detail timeline
+- Send text to the selected session
 - Push-to-talk (record -> transcribe -> send text)
+- Remote audio mirror toggle (foreground-aware)
+- Live Activities for active sessions
+- Send screenshot to selected session:
+  - pick with **Photo**
+  - stage as **Screenshot ready**
+  - send only when you tap **Send**
+  - timeline shows **📷 Screenshot sent** marker
 
-## Proposed Structure
+## Screenshot relay behavior
 
-```
-apps/pitalk-ios/
-  PiTalkiOS.xcodeproj
-  PiTalkiOS/
-    App/
-    Features/
-      Sessions/
-      SessionDetail/
-      History/
-      Settings/
-    Networking/
-      RemoteSocketClient.swift
-      ProtocolModels.swift
-      ReconnectPolicy.swift
-    Audio/
-      Recorder.swift
-      SpeechTranscriber.swift
-    Storage/
-      KeychainStore.swift
-      LastEventStore.swift
-```
+`session.sendScreenshot` stores the image on the Mac host and injects a text message into the selected Pi session with the saved file path.
 
-## State Model
+Current host storage path format:
 
-Use a single source of truth store for:
+- `~/.pi/agent/pitalk-inbox-media/<pid>/<timestamp>-<uuid>.jpg`
 
-- connection state
-- sessions snapshot
-- playback state
-- history list
-- last seen event sequence
+## Docs
 
-## MVP Checklist
-
-- [ ] Connect to remote PiTalk WebSocket endpoint.
-- [ ] Token auth handshake.
-- [ ] Sessions list UI with status chips.
-- [ ] Session detail with send text action.
-- [ ] Stop all action.
-- [ ] Reconnect + resume-from-seq support.
-- [ ] Push-to-talk text send path.
+- Setup and run: `apps/pitalk-ios/SETUP.md`
+- Protocol: `docs/REMOTE_WS_PROTOCOL.md`
+- Planning notes: `docs/IOS_REMOTE_PLAN.md`
 
 ## iOS TODO
 
-- [ ] Add end-to-end protocol conformance checks from iOS client perspective (idempotency retry behavior, replay/resumeFromSeq recovery, heartbeat timeout/reconnect assertions).
-- [ ] Add lightweight integration harness for command routing (`session.sendText`, `tts.speak`, `tts.stop`) against a scripted local PiTalk remote server fixture.
-
-## Notes
-
-Protocol details live in `docs/REMOTE_WS_PROTOCOL.md`.
+- [x] WebSocket connection + auth handshake
+- [x] Session snapshot UI + detail timeline
+- [x] `session.sendText` command path
+- [x] Push-to-talk text send path
+- [x] Remote audio streaming toggle
+- [x] Screenshot send flow (stage then explicit send)
+- [ ] Add explicit send progress state/toast for screenshot uploads
+- [ ] Add iOS-side integration test harness for command routing (`session.sendText`, `session.sendScreenshot`, `tts.speak`, `tts.stop`)
+- [ ] Add protocol conformance tests from iOS client perspective (idempotency retries, replay/resume, heartbeat timeout/reconnect)
