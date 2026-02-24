@@ -53,6 +53,7 @@ enum AppAppearance: String, CaseIterable, Identifiable {
 
 struct ContentView: View {
     @EnvironmentObject private var store: AppStore
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         TabView {
@@ -77,6 +78,9 @@ struct ContentView: View {
             if let profile = store.activeProfile {
                 store.connectToProfile(profile)
             }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            store.handleScenePhase(phase)
         }
     }
 }

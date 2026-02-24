@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import SwiftUI
 
 // MARK: - Server Profile
 
@@ -36,6 +37,8 @@ final class AppStore: ObservableObject {
     /// Set by deep link from Live Activity tap — drives navigation.
     @Published var deepLinkSessionId: String?
 
+    private var appIsActive = true
+
     let socket = RemoteSocketClient()
     private var cancellables = Set<AnyCancellable>()
 
@@ -61,6 +64,12 @@ final class AppStore: ObservableObject {
                     sessions: snapshot.sessions,
                     serverName: serverName
                 )
+            }
+            .store(in: &cancellables)
+
+        socket.$connectionState
+            .sink { [weak self] _ in
+                self?.syncAudioStreamingState()
             }
             .store(in: &cancellables)
 
@@ -124,12 +133,25 @@ final class AppStore: ObservableObject {
     }
 
     func setRemoteAudioStreaming(enabled: Bool) {
+        remoteAudioStreamingRequested = enabled
+        syncAudioStreamingState()
+    }
+
+    func handleScenePhase(_ phase: ScenePhase) {
+        appIsActive = (phase == .active)
+        syncAudioStreamingState()
+    }
+
+    private func syncAudioStreamingState() {
+        guard case .connected = socket.connectionState else { return }
+        let shouldEnable = remoteAudioStreamingRequested && appIsActive
+        if socket.audioStreamEnabled == shouldEnable { return }
+
         Task {
             do {
-                try await socket.setAudioStreaming(enabled: enabled)
-                remoteAudioStreamingRequested = enabled
+                try await socket.setAudioStreaming(enabled: shouldEnable)
             } catch {
-                remoteAudioStreamingRequested = false
+                // Keep user preference; we'll retry on next state change/reconnect.
             }
         }
     }

@@ -202,7 +202,7 @@ struct RemoteSettingsView: View {
             }
 
             Toggle(isOn: Binding(
-                get: { store.socket.audioStreamEnabled },
+                get: { store.remoteAudioStreamingRequested },
                 set: { enabled in
                     store.setRemoteAudioStreaming(enabled: enabled)
                 }
@@ -215,6 +215,15 @@ struct RemoteSettingsView: View {
                 }
             }
             .disabled(store.socket.connectionState != .connected)
+
+            if store.remoteAudioStreamingRequested {
+                HStack {
+                    Text("Remote audio stream")
+                    Spacer()
+                    Text(store.socket.audioStreamEnabled ? "Active" : "Paused")
+                        .foregroundStyle(store.socket.audioStreamEnabled ? .green : .secondary)
+                }
+            }
 
             if store.socket.audioPlaybackActive {
                 HStack {

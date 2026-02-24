@@ -18,6 +18,14 @@ final class PushToTalkController: NSObject, ObservableObject {
             guard granted else { return }
 
             do {
+                let audioSession = AVAudioSession.sharedInstance()
+                try audioSession.setCategory(
+                    .playAndRecord,
+                    mode: .spokenAudio,
+                    options: [.defaultToSpeaker, .allowBluetooth]
+                )
+                try audioSession.setActive(true)
+
                 let url = FileManager.default.temporaryDirectory
                     .appendingPathComponent("pitalk-ptt-\(UUID().uuidString).m4a")
 
@@ -49,6 +57,9 @@ final class PushToTalkController: NSObject, ObservableObject {
         recorder?.stop()
         recorder = nil
         isRecording = false
+
+        let audioSession = AVAudioSession.sharedInstance()
+        try? audioSession.setActive(false, options: .notifyOthersOnDeactivation)
 
         guard let recordingURL else { return nil }
         self.recordingURL = nil
