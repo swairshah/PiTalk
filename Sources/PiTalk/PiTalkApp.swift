@@ -129,6 +129,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             debugLog("PiTalk: Server disabled, broker not started")
         }
+
+        // Start remote runtime (WebSocket control API for companion iOS app).
+        remoteRuntime = PiTalkRemoteRuntime(appDelegate: self)
+        remoteRuntime?.startIfEnabled()
     }
     
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -149,6 +153,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func applicationWillTerminate(_ notification: Notification) {
+        remoteRuntime?.stop()
         micMonitor?.stop()
         localBroker?.stop()
         speechCoordinator?.stopAll()
@@ -184,6 +189,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     var healthServer: HealthHTTPServer?
+    var remoteRuntime: PiTalkRemoteRuntime?
     
     func startLocalBroker() {
         debugLog("PiTalk: startLocalBroker called, coordinator=\(speechCoordinator != nil), localBroker=\(localBroker != nil)")

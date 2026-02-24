@@ -5,6 +5,8 @@ Loqui exposes a local broker endpoint for centralized queueing and playback:
 - Address: `127.0.0.1:18081`
 - Protocol: NDJSON over TCP (one JSON object per line)
 
+For remote iOS/WebSocket control, see `docs/REMOTE_WS_PROTOCOL.md`.
+
 ## Commands
 
 ### speak
