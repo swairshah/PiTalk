@@ -10,7 +10,19 @@ struct PiTalkiOSApp: App {
             ContentView()
                 .environmentObject(store)
                 .preferredColorScheme(appearance.colorScheme)
+                .onOpenURL { url in
+                    handleDeepLink(url)
+                }
         }
+    }
+
+    private func handleDeepLink(_ url: URL) {
+        // pitalk://session/<sessionKey>
+        guard url.scheme == "pitalk", url.host == "session" else { return }
+        let sessionKey = url.pathComponents.dropFirst().joined(separator: "/")
+        guard !sessionKey.isEmpty else { return }
+        store.deepLinkSessionId = sessionKey
+        store.selectedSessionId = sessionKey
     }
 }
 

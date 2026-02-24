@@ -3,6 +3,8 @@ import SwiftUI
 struct SessionsView: View {
     @EnvironmentObject private var store: AppStore
 
+    /// Programmatic navigation stack for deep linking.
+    @State private var navigationPath = NavigationPath()
     /// Stable group key ordering — only mutated when groups are added/removed.
     @State private var groupOrder: [String] = []
 
@@ -38,7 +40,7 @@ struct SessionsView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $navigationPath) {
             VStack(alignment: .leading, spacing: 10) {
                 statusBar
 
@@ -73,6 +75,15 @@ struct SessionsView: View {
             }
             .onAppear { stabilizeGroupOrder() }
             .onChange(of: currentGroupKeys) { _, _ in stabilizeGroupOrder() }
+            .onChange(of: store.deepLinkSessionId) { _, newValue in
+                guard let sessionId = newValue else { return }
+                store.deepLinkSessionId = nil
+                // Pop to root then push the target session.
+                navigationPath = NavigationPath()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    navigationPath.append(sessionId)
+                }
+            }
         }
     }
 

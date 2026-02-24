@@ -32,6 +32,8 @@ final class AppStore: ObservableObject {
     @Published var selectedSessionId: String?
     @Published var draftText: String = ""
     @Published var sentMessages: [String: [SentMessage]] = [:]
+    /// Set by deep link from Live Activity tap — drives navigation.
+    @Published var deepLinkSessionId: String?
 
     let socket = RemoteSocketClient()
     private var cancellables = Set<AnyCancellable>()
@@ -45,6 +47,19 @@ final class AppStore: ObservableObject {
         socket.objectWillChange
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+
+        // Drive Live Activities from snapshot updates.
+        socket.$snapshot
+            .removeDuplicates()
+            .sink { [weak self] snapshot in
+                guard let self else { return }
+                let serverName = self.activeProfile?.displayName ?? "PiTalk"
+                LiveActivityManager.shared.reconcile(
+                    sessions: snapshot.sessions,
+                    serverName: serverName
+                )
             }
             .store(in: &cancellables)
 
@@ -89,6 +104,7 @@ final class AppStore: ObservableObject {
 
     func disconnect() {
         socket.disconnect()
+        LiveActivityManager.shared.endAll()
     }
 
     func reconnect() {
