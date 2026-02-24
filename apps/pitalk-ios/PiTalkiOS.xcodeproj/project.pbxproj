@@ -17,7 +17,37 @@
 		ABFA9EDCEBEE34004629B2CF /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CB31117E8284B9D9CD0E9B3 /* HistoryView.swift */; };
 		AF92821DF5F24BD4F088B0F2 /* RemoteProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C357B43A4B25C5457C97CAF /* RemoteProtocol.swift */; };
 		F6F03E3963FD493A48D613A1 /* SessionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FC1B898671E21D9C99BC504 /* SessionsView.swift */; };
+		BB000001LA00000000000001 /* LiveActivityManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000002LA00000000000002 /* LiveActivityManager.swift */; };
+		BB000003AT00000000000003 /* PiTalkActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000004AT00000000000004 /* PiTalkActivityAttributes.swift */; };
+		BB000005WL00000000000005 /* PiTalkLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000006WL00000000000006 /* PiTalkLiveActivity.swift */; };
+		BB000007WB00000000000007 /* PiTalkActivityWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000008WB00000000000008 /* PiTalkActivityWidgetBundle.swift */; };
+		BB000009AT00000000000009 /* PiTalkActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000004AT00000000000004 /* PiTalkActivityAttributes.swift */; };
+		BB00000AEM0000000000000A /* PiTalkActivityWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = BB00000BEM0000000000000B /* PiTalkActivityWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		BB00000CCP0000000000000C /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AAAE00F00A212093D3FB4359 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = BB00000DWT0000000000000D;
+			remoteInfo = PiTalkActivityWidget;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		BB00000EEF0000000000000E /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				BB00000AEM0000000000000A /* PiTalkActivityWidget.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		0237D454B872A53603A1320E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -32,6 +62,12 @@
 		ADAA7EDB5E657203F36F8AEC /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
 		C0C0DB1837043BD624F2222F /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		E83BFB7141430692721032A2 /* PushToTalkController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushToTalkController.swift; sourceTree = "<group>"; };
+		BB000002LA00000000000002 /* LiveActivityManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityManager.swift; sourceTree = "<group>"; };
+		BB000004AT00000000000004 /* PiTalkActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiTalkActivityAttributes.swift; sourceTree = "<group>"; };
+		BB000006WL00000000000006 /* PiTalkLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiTalkLiveActivity.swift; sourceTree = "<group>"; };
+		BB000008WB00000000000008 /* PiTalkActivityWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiTalkActivityWidgetBundle.swift; sourceTree = "<group>"; };
+		BB00000BEM0000000000000B /* PiTalkActivityWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = PiTalkActivityWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		BB00000FIP0000000000000F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -47,6 +83,7 @@
 			isa = PBXGroup;
 			children = (
 				ADAA7EDB5E657203F36F8AEC /* AppStore.swift */,
+				BB000002LA00000000000002 /* LiveActivityManager.swift */,
 				08406AF6D2FE18F38503783A /* PiTalkiOSApp.swift */,
 			);
 			path = App;
@@ -56,6 +93,7 @@
 			isa = PBXGroup;
 			children = (
 				87CCC56B50E598555D791B89 /* PiTalkiOS.app */,
+				BB00000BEM0000000000000B /* PiTalkActivityWidget.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -64,6 +102,7 @@
 			isa = PBXGroup;
 			children = (
 				CF5E5A481B16087B118A7CBC /* PiTalkiOS */,
+				BB000010WG00000000000010 /* PiTalkActivityWidget */,
 				7F4D31E3BFF377D42B43517D /* Products */,
 			);
 			sourceTree = "<group>";
@@ -103,6 +142,7 @@
 				C76C3F77046D3B2B5117335C /* Audio */,
 				83CA10E4CB40936C70DAB219 /* Features */,
 				F5AA450763CBD49DDE4D5013 /* Networking */,
+				BB000011SH00000000000011 /* Shared */,
 			);
 			path = PiTalkiOS;
 			sourceTree = "<group>";
@@ -125,6 +165,24 @@
 			path = Networking;
 			sourceTree = "<group>";
 		};
+		BB000011SH00000000000011 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				BB000004AT00000000000004 /* PiTalkActivityAttributes.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		BB000010WG00000000000010 /* PiTalkActivityWidget */ = {
+			isa = PBXGroup;
+			children = (
+				BB00000FIP0000000000000F /* Info.plist */,
+				BB000006WL00000000000006 /* PiTalkLiveActivity.swift */,
+				BB000008WB00000000000008 /* PiTalkActivityWidgetBundle.swift */,
+			);
+			path = PiTalkActivityWidget;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -134,10 +192,12 @@
 			buildPhases = (
 				E604D349D375E920159074D0 /* Sources */,
 				AA000003RESOURCES000003 /* Resources */,
+				BB00000EEF0000000000000E /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				BB000012DP00000000000012 /* PBXTargetDependency */,
 			);
 			name = PiTalkiOS;
 			packageProductDependencies = (
@@ -145,6 +205,21 @@
 			productName = PiTalkiOS;
 			productReference = 87CCC56B50E598555D791B89 /* PiTalkiOS.app */;
 			productType = "com.apple.product-type.application";
+		};
+		BB00000DWT0000000000000D /* PiTalkActivityWidget */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BB000013CL00000000000013 /* Build configuration list for PBXNativeTarget "PiTalkActivityWidget" */;
+			buildPhases = (
+				BB000014SP00000000000014 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = PiTalkActivityWidget;
+			productName = PiTalkActivityWidget;
+			productReference = BB00000BEM0000000000000B /* PiTalkActivityWidget.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -156,6 +231,9 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					FAA59CE804B60417EF8B20FB = {
+						ProvisioningStyle = Automatic;
+					};
+					BB00000DWT0000000000000D = {
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -174,6 +252,7 @@
 			projectRoot = "";
 			targets = (
 				FAA59CE804B60417EF8B20FB /* PiTalkiOS */,
+				BB00000DWT0000000000000D /* PiTalkActivityWidget */,
 			);
 		};
 /* End PBXProject section */
@@ -203,10 +282,30 @@
 				472AD327922AB173796364F4 /* SessionDetailView.swift in Sources */,
 				F6F03E3963FD493A48D613A1 /* SessionsView.swift in Sources */,
 				5F607F6EA5E29EA82439247C /* SettingsView.swift in Sources */,
+				BB000001LA00000000000001 /* LiveActivityManager.swift in Sources */,
+				BB000003AT00000000000003 /* PiTalkActivityAttributes.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BB000014SP00000000000014 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BB000005WL00000000000005 /* PiTalkLiveActivity.swift in Sources */,
+				BB000007WB00000000000007 /* PiTalkActivityWidgetBundle.swift in Sources */,
+				BB000009AT00000000000009 /* PiTalkActivityAttributes.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		BB000012DP00000000000012 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = BB00000DWT0000000000000D /* PiTalkActivityWidget */;
+			targetProxy = BB00000CCP0000000000000C /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		154A246C276C670ADEF2ACBA /* Release */ = {
@@ -372,6 +471,60 @@
 			};
 			name = Debug;
 		};
+		BB000015WD00000000000015 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 8B9YURJS4G;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = PiTalkActivityWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = PiTalkActivityWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pitalk.ios.activity-widget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		BB000016WR00000000000016 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 8B9YURJS4G;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = PiTalkActivityWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = PiTalkActivityWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pitalk.ios.activity-widget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -389,6 +542,15 @@
 			buildConfigurations = (
 				FC7BE6A90EBA0E74B7CDE395 /* Debug */,
 				440B34D61E33018296D96BD5 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		BB000013CL00000000000013 /* Build configuration list for PBXNativeTarget "PiTalkActivityWidget" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BB000015WD00000000000015 /* Debug */,
+				BB000016WR00000000000016 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
