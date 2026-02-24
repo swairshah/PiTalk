@@ -1,0 +1,399 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 63;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		AA000001ASSETS0000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA000002ASSETS0000000002 /* Assets.xcassets */; };
+		10E096E468CA29D793971FC5 /* PiTalkiOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08406AF6D2FE18F38503783A /* PiTalkiOSApp.swift */; };
+		202771F01847EA981A59A34C /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAA7EDB5E657203F36F8AEC /* AppStore.swift */; };
+		21108731262123D3F6433223 /* RemoteSocketClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DAC88FABBB41C6D6DF46C97 /* RemoteSocketClient.swift */; };
+		243B2F4C685312C21778B79B /* PushToTalkController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E83BFB7141430692721032A2 /* PushToTalkController.swift */; };
+		472AD327922AB173796364F4 /* SessionDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57B68272FE5F2EA5BD19EBE0 /* SessionDetailView.swift */; };
+		5F607F6EA5E29EA82439247C /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0C0DB1837043BD624F2222F /* SettingsView.swift */; };
+		ABFA9EDCEBEE34004629B2CF /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CB31117E8284B9D9CD0E9B3 /* HistoryView.swift */; };
+		AF92821DF5F24BD4F088B0F2 /* RemoteProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C357B43A4B25C5457C97CAF /* RemoteProtocol.swift */; };
+		F6F03E3963FD493A48D613A1 /* SessionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FC1B898671E21D9C99BC504 /* SessionsView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		0237D454B872A53603A1320E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		AA000002ASSETS0000000002 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		08406AF6D2FE18F38503783A /* PiTalkiOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiTalkiOSApp.swift; sourceTree = "<group>"; };
+		1C357B43A4B25C5457C97CAF /* RemoteProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteProtocol.swift; sourceTree = "<group>"; };
+		2DAC88FABBB41C6D6DF46C97 /* RemoteSocketClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSocketClient.swift; sourceTree = "<group>"; };
+		57B68272FE5F2EA5BD19EBE0 /* SessionDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionDetailView.swift; sourceTree = "<group>"; };
+		6CB31117E8284B9D9CD0E9B3 /* HistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryView.swift; sourceTree = "<group>"; };
+		6FC1B898671E21D9C99BC504 /* SessionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionsView.swift; sourceTree = "<group>"; };
+		87CCC56B50E598555D791B89 /* PiTalkiOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PiTalkiOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		ADAA7EDB5E657203F36F8AEC /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
+		C0C0DB1837043BD624F2222F /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		E83BFB7141430692721032A2 /* PushToTalkController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushToTalkController.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		26469FA7361B140FB7FC8576 /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				C0C0DB1837043BD624F2222F /* SettingsView.swift */,
+			);
+			path = Settings;
+			sourceTree = "<group>";
+		};
+		3C35AAE9209C8A74236E57E5 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				ADAA7EDB5E657203F36F8AEC /* AppStore.swift */,
+				08406AF6D2FE18F38503783A /* PiTalkiOSApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		7F4D31E3BFF377D42B43517D /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				87CCC56B50E598555D791B89 /* PiTalkiOS.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		81F826632B02E10751393D33 = {
+			isa = PBXGroup;
+			children = (
+				CF5E5A481B16087B118A7CBC /* PiTalkiOS */,
+				7F4D31E3BFF377D42B43517D /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		83CA10E4CB40936C70DAB219 /* Features */ = {
+			isa = PBXGroup;
+			children = (
+				9AD04E90DBA74C574EFB0DB5 /* History */,
+				EF11A23341A58628285E8C3C /* Sessions */,
+				26469FA7361B140FB7FC8576 /* Settings */,
+			);
+			path = Features;
+			sourceTree = "<group>";
+		};
+		9AD04E90DBA74C574EFB0DB5 /* History */ = {
+			isa = PBXGroup;
+			children = (
+				6CB31117E8284B9D9CD0E9B3 /* HistoryView.swift */,
+			);
+			path = History;
+			sourceTree = "<group>";
+		};
+		C76C3F77046D3B2B5117335C /* Audio */ = {
+			isa = PBXGroup;
+			children = (
+				E83BFB7141430692721032A2 /* PushToTalkController.swift */,
+			);
+			path = Audio;
+			sourceTree = "<group>";
+		};
+		CF5E5A481B16087B118A7CBC /* PiTalkiOS */ = {
+			isa = PBXGroup;
+			children = (
+				0237D454B872A53603A1320E /* Info.plist */,
+				AA000002ASSETS0000000002 /* Assets.xcassets */,
+				3C35AAE9209C8A74236E57E5 /* App */,
+				C76C3F77046D3B2B5117335C /* Audio */,
+				83CA10E4CB40936C70DAB219 /* Features */,
+				F5AA450763CBD49DDE4D5013 /* Networking */,
+			);
+			path = PiTalkiOS;
+			sourceTree = "<group>";
+		};
+		EF11A23341A58628285E8C3C /* Sessions */ = {
+			isa = PBXGroup;
+			children = (
+				57B68272FE5F2EA5BD19EBE0 /* SessionDetailView.swift */,
+				6FC1B898671E21D9C99BC504 /* SessionsView.swift */,
+			);
+			path = Sessions;
+			sourceTree = "<group>";
+		};
+		F5AA450763CBD49DDE4D5013 /* Networking */ = {
+			isa = PBXGroup;
+			children = (
+				1C357B43A4B25C5457C97CAF /* RemoteProtocol.swift */,
+				2DAC88FABBB41C6D6DF46C97 /* RemoteSocketClient.swift */,
+			);
+			path = Networking;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		FAA59CE804B60417EF8B20FB /* PiTalkiOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DD89BE92A4639F4E53075756 /* Build configuration list for PBXNativeTarget "PiTalkiOS" */;
+			buildPhases = (
+				E604D349D375E920159074D0 /* Sources */,
+				AA000003RESOURCES000003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = PiTalkiOS;
+			packageProductDependencies = (
+			);
+			productName = PiTalkiOS;
+			productReference = 87CCC56B50E598555D791B89 /* PiTalkiOS.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		AAAE00F00A212093D3FB4359 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					FAA59CE804B60417EF8B20FB = {
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 1E89F42768584908D3F930E7 /* Build configuration list for PBXProject "PiTalkiOS" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 81F826632B02E10751393D33;
+			minimizedProjectReferenceProxies = 1;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				FAA59CE804B60417EF8B20FB /* PiTalkiOS */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		AA000003RESOURCES000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA000001ASSETS0000000001 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		E604D349D375E920159074D0 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				202771F01847EA981A59A34C /* AppStore.swift in Sources */,
+				ABFA9EDCEBEE34004629B2CF /* HistoryView.swift in Sources */,
+				10E096E468CA29D793971FC5 /* PiTalkiOSApp.swift in Sources */,
+				243B2F4C685312C21778B79B /* PushToTalkController.swift in Sources */,
+				AF92821DF5F24BD4F088B0F2 /* RemoteProtocol.swift in Sources */,
+				21108731262123D3F6433223 /* RemoteSocketClient.swift in Sources */,
+				472AD327922AB173796364F4 /* SessionDetailView.swift in Sources */,
+				F6F03E3963FD493A48D613A1 /* SessionsView.swift in Sources */,
+				5F607F6EA5E29EA82439247C /* SettingsView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		154A246C276C670ADEF2ACBA /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = PiTalkiOS;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Release;
+		};
+		440B34D61E33018296D96BD5 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 8B9YURJS4G;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = PiTalkiOS/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.pitalk.ios;
+				SDKROOT = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		7E2F25D1A3050C737EEFAA11 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = PiTalkiOS;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Debug;
+		};
+		FC7BE6A90EBA0E74B7CDE395 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 8B9YURJS4G;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = PiTalkiOS/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.pitalk.ios;
+				SDKROOT = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1E89F42768584908D3F930E7 /* Build configuration list for PBXProject "PiTalkiOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7E2F25D1A3050C737EEFAA11 /* Debug */,
+				154A246C276C670ADEF2ACBA /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		DD89BE92A4639F4E53075756 /* Build configuration list for PBXNativeTarget "PiTalkiOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FC7BE6A90EBA0E74B7CDE395 /* Debug */,
+				440B34D61E33018296D96BD5 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = AAAE00F00A212093D3FB4359 /* Project object */;
+}
