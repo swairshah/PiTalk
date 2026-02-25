@@ -18,6 +18,7 @@ final class PiTalkRemoteRuntime {
         let defaults = UserDefaults.standard
         let enabled = defaults.object(forKey: "remoteServerEnabled") as? Bool ?? true
         guard enabled else {
+            monitor.stop()
             print("PiTalk Remote: disabled via remoteServerEnabled=false")
             return
         }
@@ -46,17 +47,20 @@ final class PiTalkRemoteRuntime {
 
         do {
             try server.start()
+            monitor.start()
             self.server = server
             bindPublishers()
             wireAudioMirrorHandler()
             publishSnapshotIfChanged(force: true)
         } catch {
+            monitor.stop()
             print("PiTalk Remote: failed to start: \(error.localizedDescription)")
         }
     }
 
     func stop() {
         cancellables.removeAll()
+        monitor.stop()
         appDelegate?.speechCoordinator?.setAudioMirrorHandler(nil)
         server?.stop()
         server = nil

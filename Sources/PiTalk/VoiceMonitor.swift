@@ -95,7 +95,6 @@ final class VoiceMonitor: ObservableObject {
     
     private var timer: Timer?
     private var refreshTask: Task<Void, Never>?
-    private var refreshRevision: UInt64 = 0
     private let historyStore = RequestHistoryStore.shared
     private let activeSessionWindow: TimeInterval = 5 * 60  // 5 minutes
     
@@ -191,14 +190,13 @@ final class VoiceMonitor: ObservableObject {
     }
     
     func refresh() {
+        guard refreshTask == nil else { return }
+
         let entries = historyStore.entries
         let isMicActive = self.isMicActive
         let currentSessions = self.sessions
         let activeSessionWindow = self.activeSessionWindow
 
-        refreshRevision &+= 1
-        let revision = refreshRevision
-        refreshTask?.cancel()
         refreshTask = Task(priority: .utility) { [weak self, entries, isMicActive, currentSessions, activeSessionWindow] in
             let refreshResult = await Task.detached(priority: .utility) {
                 VoiceMonitor.computeRefreshResult(
@@ -209,9 +207,9 @@ final class VoiceMonitor: ObservableObject {
                 )
             }.value
 
-            if Task.isCancelled { return }
             guard let self else { return }
-            guard self.refreshRevision == revision else { return }
+            defer { self.refreshTask = nil }
+            if Task.isCancelled { return }
 
             self.sessions = refreshResult.sessions
             self.summary = refreshResult.summary

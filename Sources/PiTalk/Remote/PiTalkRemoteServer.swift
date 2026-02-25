@@ -10,6 +10,7 @@ private final class PiTalkRemotePeer {
     var audioStreamEnabled = false
     var awaitingPongCount = 0
     var idempotentAckByKey: [String: PiTalkRemoteFrame] = [:]
+    var idempotentAckOrder: [String] = []
 
     init(connection: NWConnection) {
         self.connection = connection
@@ -30,6 +31,7 @@ private enum PiTalkRemoteBroadcastScope {
 final class PiTalkRemoteServer {
     private let config: PiTalkRemoteServerConfig
     private let queue = DispatchQueue(label: "pitalk.remote.server")
+    private let maxIdempotentAcksPerPeer = 256
 
     private var listener: NWListener?
     private var peers: [UUID: PiTalkRemotePeer] = [:]
@@ -511,7 +513,7 @@ final class PiTalkRemoteServer {
         peer.audioStreamEnabled = payload.enabled
         let ackPayload: JSONValue = .object(["enabled": .bool(payload.enabled)])
         let ack = PiTalkRemoteFrame.ack(name: name, requestId: requestId, payload: ackPayload)
-        peer.idempotentAckByKey[idempotencyKey] = ack
+        storeIdempotentAck(ack, for: idempotencyKey, peer: peer)
         send(frame: ack, to: peer)
     }
 
@@ -558,7 +560,7 @@ final class PiTalkRemoteServer {
                 if result.ok {
                     let payload = JSONValue.from(any: result.payload) ?? .object([:])
                     let ack = PiTalkRemoteFrame.ack(name: name, requestId: requestId, payload: payload)
-                    peer.idempotentAckByKey[idempotencyKey] = ack
+                    self.storeIdempotentAck(ack, for: idempotencyKey, peer: peer)
                     self.send(frame: ack, to: peer)
                 } else {
                     self.sendError(
@@ -569,6 +571,21 @@ final class PiTalkRemoteServer {
                         to: peer
                     )
                 }
+            }
+        }
+    }
+
+    private func storeIdempotentAck(_ frame: PiTalkRemoteFrame, for key: String, peer: PiTalkRemotePeer) {
+        if peer.idempotentAckByKey[key] == nil {
+            peer.idempotentAckOrder.append(key)
+        }
+        peer.idempotentAckByKey[key] = frame
+
+        let overflow = peer.idempotentAckOrder.count - maxIdempotentAcksPerPeer
+        if overflow > 0 {
+            for _ in 0..<overflow {
+                let evicted = peer.idempotentAckOrder.removeFirst()
+                peer.idempotentAckByKey.removeValue(forKey: evicted)
             }
         }
     }
