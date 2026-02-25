@@ -192,7 +192,7 @@ final class LocalTTSRuntime {
             "--prewarm-voices", "alba",
             "--warmup", "true"
         ]
-        if let cwd = runtimeWorkingDirectory() {
+        if let cwd = prepareRuntimeWorkingDirectory() {
             process.currentDirectoryURL = cwd
         }
         process.environment = runtimeEnvironment()
@@ -536,12 +536,44 @@ final class LocalTTSRuntime {
             && directoryContainsFiles(embeddingsSnapshot)
     }
 
-    private func runtimeWorkingDirectory() -> URL? {
+    private func prepareRuntimeWorkingDirectory() -> URL? {
+        let fm = FileManager.default
+
+        guard let configSource = bundledConfigFileURL() else { return nil }
+        guard let modelsRoot = activeModelsRoot() else { return nil }
+
+        let runtimeDir = modelCacheDirectory().appendingPathComponent("runtime")
+        let configDir = runtimeDir.appendingPathComponent("config")
+        let configDest = configDir.appendingPathComponent("b6369a24.yaml")
+        let modelsLink = runtimeDir.appendingPathComponent("models")
+
+        try? fm.createDirectory(at: configDir, withIntermediateDirectories: true)
+
+        if fm.fileExists(atPath: configDest.path) {
+            try? fm.removeItem(at: configDest)
+        }
+        try? fm.copyItem(at: configSource, to: configDest)
+
+        if fm.fileExists(atPath: modelsLink.path) {
+            try? fm.removeItem(at: modelsLink)
+        }
+        try? fm.createSymbolicLink(atPath: modelsLink.path, withDestinationPath: modelsRoot.path)
+
+        return runtimeDir
+    }
+
+    private func bundledConfigFileURL() -> URL? {
         guard let resourcePath = Bundle.main.resourcePath else { return nil }
-        let resourceURL = URL(fileURLWithPath: resourcePath)
-        let configFile = resourceURL.appendingPathComponent("config/b6369a24.yaml")
-        if FileManager.default.fileExists(atPath: configFile.path) {
-            return resourceURL
+        let config = URL(fileURLWithPath: resourcePath).appendingPathComponent("config/b6369a24.yaml")
+        return FileManager.default.fileExists(atPath: config.path) ? config : nil
+    }
+
+    private func activeModelsRoot() -> URL? {
+        if hasDownloadedModelFiles() {
+            return downloadedModelsDirectory()
+        }
+        if let bundled = bundledModelsDirectory() {
+            return bundled
         }
         return nil
     }
