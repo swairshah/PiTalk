@@ -192,6 +192,9 @@ final class LocalTTSRuntime {
             "--prewarm-voices", "alba",
             "--warmup", "true"
         ]
+        if let cwd = runtimeWorkingDirectory() {
+            process.currentDirectoryURL = cwd
+        }
         process.environment = runtimeEnvironment()
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
@@ -531,6 +534,16 @@ final class LocalTTSRuntime {
         return fm.fileExists(atPath: weightsSnapshot.path)
             && fm.fileExists(atPath: tokenizerSnapshot.path)
             && directoryContainsFiles(embeddingsSnapshot)
+    }
+
+    private func runtimeWorkingDirectory() -> URL? {
+        guard let resourcePath = Bundle.main.resourcePath else { return nil }
+        let resourceURL = URL(fileURLWithPath: resourcePath)
+        let configFile = resourceURL.appendingPathComponent("config/b6369a24.yaml")
+        if FileManager.default.fileExists(atPath: configFile.path) {
+            return resourceURL
+        }
+        return nil
     }
 
     private func resolveRuntimeBinaryURL() -> URL? {

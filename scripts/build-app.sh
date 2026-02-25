@@ -106,6 +106,21 @@ else
     echo "Skipping model bundling (default lightweight app package)."
 fi
 
+# Copy local runtime config files if present
+CONFIG_DIR="Resources/config"
+if [ ! -d "$CONFIG_DIR" ] || [ ! -f "$CONFIG_DIR/b6369a24.yaml" ]; then
+    if [ -d "../Loqui/Resources/config" ] && [ -f "../Loqui/Resources/config/b6369a24.yaml" ]; then
+        CONFIG_DIR="../Loqui/Resources/config"
+    fi
+fi
+if [ -d "$CONFIG_DIR" ]; then
+    mkdir -p "$APP_DIR/Contents/Resources/config"
+    cp "$CONFIG_DIR"/*.yaml "$APP_DIR/Contents/Resources/config/" 2>/dev/null || true
+    echo "Bundled runtime config files from $CONFIG_DIR"
+else
+    echo "⚠️  No runtime config dir found (checked Resources/config and ../Loqui/Resources/config)"
+fi
+
 # Copy app icon
 cp Resources/icons/AppIcon.icns "$APP_DIR/Contents/Resources/"
 
