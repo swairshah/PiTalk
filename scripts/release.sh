@@ -91,6 +91,12 @@ codesign --force --options runtime \
     --sign "$SIGNING_IDENTITY" \
     "$APP_DIR/Contents/MacOS/ptts"
 
+if [ -f "$APP_DIR/Contents/Resources/pocket-tts-cli" ]; then
+    codesign --force --options runtime \
+        --sign "$SIGNING_IDENTITY" \
+        "$APP_DIR/Contents/Resources/pocket-tts-cli"
+fi
+
 codesign --force --deep --options runtime \
     --sign "$SIGNING_IDENTITY" \
     "$APP_DIR"
@@ -186,12 +192,47 @@ fi
 echo -e "${YELLOW}📦 Packaging pi-talk extension...${NC}"
 zip -j dist/pi-talk-${VERSION}.zip Extensions/pi-talk/index.ts Extensions/pi-talk/package.json Extensions/pi-talk/README.md 2>/dev/null || true
 
-# 11. Calculate SHA for Homebrew
+# 11. Package optional local model asset (downloaded on demand from same release)
+MODELS_DIR="Resources/models"
+if [ ! -d "$MODELS_DIR" ] || [ ! -f "$MODELS_DIR/tts_b6369a24.safetensors" ]; then
+    if [ -d "../Loqui/Resources/models" ] && [ -f "../Loqui/Resources/models/tts_b6369a24.safetensors" ]; then
+        MODELS_DIR="../Loqui/Resources/models"
+    fi
+fi
+
+MODEL_ZIP="dist/PiTalk-models-${VERSION}.zip"
+if [ -d "$MODELS_DIR" ] && [ -f "$MODELS_DIR/tts_b6369a24.safetensors" ]; then
+    echo -e "${YELLOW}📦 Packaging local model asset...${NC}"
+    STAGE_DIR=$(mktemp -d)
+    mkdir -p "$STAGE_DIR/models/embeddings"
+    cp "$MODELS_DIR/tts_b6369a24.safetensors" "$STAGE_DIR/models/" 2>/dev/null || true
+    cp "$MODELS_DIR/tokenizer.model" "$STAGE_DIR/models/" 2>/dev/null || true
+
+    if [ -d "$MODELS_DIR/embeddings" ]; then
+        cp "$MODELS_DIR/embeddings/"*.safetensors "$STAGE_DIR/models/embeddings/" 2>/dev/null || true
+    else
+        for voice_file in "$MODELS_DIR"/*.safetensors; do
+            [ -e "$voice_file" ] || continue
+            base_name="$(basename "$voice_file")"
+            if [ "$base_name" != "tts_b6369a24.safetensors" ]; then
+                cp "$voice_file" "$STAGE_DIR/models/embeddings/" 2>/dev/null || true
+            fi
+        done
+    fi
+
+    (cd "$STAGE_DIR" && zip -qr "$OLDPWD/$MODEL_ZIP" models)
+    rm -rf "$STAGE_DIR"
+    echo -e "   Created ${GREEN}$MODEL_ZIP${NC}"
+else
+    echo -e "${YELLOW}⚠ Skipping model asset: no model files found in Resources/models or ../Loqui/Resources/models${NC}"
+fi
+
+# 12. Calculate SHA for Homebrew
 echo ""
 SHA=$(shasum -a 256 "$DMG_PATH" | cut -d' ' -f1)
 echo -e "📋 SHA256: ${GREEN}$SHA${NC}"
 
-# 12. Update Homebrew cask
+# 13. Update Homebrew cask
 CASK_FILE=~/work/projects/homebrew-tap/Casks/pitalk.rb
 if [ -f "$CASK_FILE" ]; then
     echo -e "${YELLOW}📝 Updating Homebrew cask...${NC}"
@@ -213,12 +254,15 @@ echo ""
 echo -e "     git tag -a v${VERSION} -m \"Release v${VERSION}\""
 echo -e "     git push origin v${VERSION}"
 echo ""
-echo -e "     gh release create v${VERSION} \\"
-echo -e "       dist/PiTalk-${VERSION}.dmg \\"
+echo -e "     gh release create v${VERSION} \\" 
+echo -e "       dist/PiTalk-${VERSION}.dmg \\" 
 if [ -f "dist/pi-talk-${VERSION}.zip" ]; then
-echo -e "       dist/pi-talk-${VERSION}.zip \\"
+echo -e "       dist/pi-talk-${VERSION}.zip \\" 
 fi
-echo -e "       --title \"PiTalk v${VERSION}\" \\"
+if [ -f "dist/PiTalk-models-${VERSION}.zip" ]; then
+echo -e "       dist/PiTalk-models-${VERSION}.zip \\" 
+fi
+echo -e "       --title \"PiTalk v${VERSION}\" \\" 
 echo -e "       --generate-notes"
 echo ""
 echo -e "  3. Push Homebrew tap:"

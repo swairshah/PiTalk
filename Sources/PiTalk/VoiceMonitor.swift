@@ -624,12 +624,14 @@ final class VoiceMonitor: ObservableObject {
     }
     
     private func checkServerHealth() {
-        // Check API key availability for the currently selected TTS provider
+        // Check provider readiness for the currently selected TTS provider
         switch SpeechPlaybackCoordinator.currentProvider {
         case .elevenlabs:
             serverOnline = ElevenLabsApiKeyManager.resolvedKey() != nil
         case .google:
             serverOnline = GoogleApiKeyManager.resolvedKey() != nil
+        case .local:
+            serverOnline = LocalTTSRuntime.shared.isRuntimeAvailable() && LocalTTSRuntime.shared.isModelInstalled()
         }
     }
     

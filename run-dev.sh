@@ -14,17 +14,40 @@ NC='\033[0m'
 
 echo -e "${GREEN}=== PiTalk Dev Build & Run ===${NC}"
 
-# Load API keys from ~/.env
-if [ -f ~/.env ]; then
-    echo -e "${YELLOW}Loading ~/.env...${NC}"
-    set -a
-    source ~/.env
-    set +a
+# Optionally load API keys from ~/.env without sourcing arbitrary shell code.
+# Set PITALK_SKIP_ENV=1 to skip this entirely.
+if [ "${PITALK_SKIP_ENV:-0}" != "1" ] && [ -f ~/.env ]; then
+    echo -e "${YELLOW}Loading API keys from ~/.env (safe parse)...${NC}"
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Trim leading whitespace
+        line="${line#"${line%%[![:space:]]*}"}"
+
+        # Skip empty/comment lines
+        [ -z "$line" ] && continue
+        [[ "$line" == \#* ]] && continue
+
+        case "$line" in
+            ELEVENLABS_API_KEY=*|ELEVEN_API_KEY=*|GOOGLE_TTS_API_KEY=*)
+                key="${line%%=*}"
+                value="${line#*=}"
+
+                # Strip surrounding single/double quotes if present
+                if [[ "$value" =~ ^\".*\"$ ]]; then
+                    value="${value:1:${#value}-2}"
+                elif [[ "$value" =~ ^\'.*\'$ ]]; then
+                    value="${value:1:${#value}-2}"
+                fi
+
+                export "$key=$value"
+                ;;
+        esac
+    done < ~/.env
 fi
 
 # Kill existing PiTalk
 pkill -f "PiTalk" 2>/dev/null || true
 lsof -ti:18081 2>/dev/null | xargs kill -9 2>/dev/null || true
+lsof -ti:18083 2>/dev/null | xargs kill -9 2>/dev/null || true
 sleep 0.5
 
 # Build

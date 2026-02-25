@@ -22,6 +22,12 @@ final class SpeechToText {
             transcribeWithElevenLabs(audioData: audioData, completion: completion)
         case .google:
             transcribeWithGoogle(audioData: audioData, completion: completion)
+        case .local:
+            completion(TranscriptionResult(
+                success: false,
+                text: nil,
+                error: "Speech-to-text is not available in Local mode yet. Switch provider to ElevenLabs or Google."
+            ))
         }
     }
     

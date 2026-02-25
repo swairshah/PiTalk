@@ -45,7 +45,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     static var shared: AppDelegate?
     
     // Menu bar UI is handled by SwiftUI MenuBarExtra
-    // TTS is handled by ElevenLabs API (no local server needed)
+    // TTS can run via cloud providers or optional local on-device runtime
     var settingsWindow: NSWindow?
     var hotKeyRef: EventHotKeyRef?
     var eventHandler: EventHandlerRef?
@@ -156,6 +156,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         remoteRuntime?.stop()
         micMonitor?.stop()
         localBroker?.stop()
+        LocalTTSRuntime.shared.stopServer()
         speechCoordinator?.stopAll()
         if let hotKeyRef = hotKeyRef {
             UnregisterEventHotKey(hotKeyRef)
@@ -736,6 +737,8 @@ final class SpeechPlaybackCoordinator {
             return SpeechPlaybackCoordinator.elevenLabsVoicePool
         case .google:
             return SpeechPlaybackCoordinator.googleVoicePool
+        case .local:
+            return SpeechPlaybackCoordinator.localVoicePool
         }
     }
     private var autoVoiceByQueueKey: [String: String] = [:]
@@ -1002,11 +1005,13 @@ final class SpeechPlaybackCoordinator {
     enum TTSProvider: String, CaseIterable {
         case elevenlabs = "elevenlabs"
         case google = "google"
+        case local = "local"
         
         var displayName: String {
             switch self {
             case .elevenlabs: return "ElevenLabs"
             case .google: return "Google Cloud"
+            case .local: return "Local"
             }
         }
     }
@@ -1050,6 +1055,7 @@ final class SpeechPlaybackCoordinator {
     
     static let googleVoicePool = ["george", "emma", "oliver", "sophia", "jack", "olivia"]
     static let elevenLabsVoicePool = ["ally", "dorothy", "lily", "alice", "dave", "joseph"]
+    static let localVoicePool = ["alba", "fantine", "cosette", "marius", "eponine", "azelma", "javert"]
     
     private func synthesize(job: SpeechJob) async throws -> Data {
         switch Self.currentProvider {
@@ -1057,6 +1063,8 @@ final class SpeechPlaybackCoordinator {
             return try await synthesizeWithElevenLabs(job: job)
         case .google:
             return try await synthesizeWithGoogle(job: job)
+        case .local:
+            return try await synthesizeWithLocal(job: job)
         }
     }
     
@@ -1162,6 +1170,16 @@ final class SpeechPlaybackCoordinator {
         return audioData
     }
     
+    private func synthesizeWithLocal(job: SpeechJob) async throws -> Data {
+        guard LocalTTSRuntime.shared.isModelInstalled() else {
+            throw NSError(domain: "PiTalk", code: 503, userInfo: [
+                NSLocalizedDescriptionKey: "Local model not downloaded yet. Open Settings → TTS Provider → Local and download the model."
+            ])
+        }
+
+        return try await LocalTTSRuntime.shared.synthesize(text: job.text, voice: job.voice)
+    }
+    
     private func audioStreamID(job: SpeechJob, runNonce: UUID) -> String {
         "\(job.historyEntryId.uuidString)-\(runNonce.uuidString)"
     }
@@ -1175,6 +1193,7 @@ final class SpeechPlaybackCoordinator {
 
     private func emitAudioMirrorStart(job: SpeechJob, runNonce: UUID) -> String {
         let streamId = audioStreamID(job: job, runNonce: runNonce)
+        let mimeType = Self.currentProvider == .local ? "audio/wav" : "audio/mpeg"
         emitAudioMirror(
             .start(
                 PiTalkRemoteAudioStart(
@@ -1183,7 +1202,7 @@ final class SpeechPlaybackCoordinator {
                     sessionId: job.sessionId,
                     pid: job.pid,
                     voice: job.voice,
-                    mimeType: "audio/mpeg"
+                    mimeType: mimeType
                 )
             )
         )
@@ -1199,8 +1218,8 @@ final class SpeechPlaybackCoordinator {
         emitAudioMirror(.end(PiTalkRemoteAudioEnd(streamId: streamId, status: status)))
     }
 
-    /// Streaming TTS - uses fast model and streaming API for lower latency
-    /// For ElevenLabs: uses streaming API. For Google: falls back to non-streaming.
+    /// Streaming TTS - uses fast model and streaming API for lower latency.
+    /// Local mode is on-device and uses a local Rust runtime.
     private func synthesizeAndPlayStreaming(job: SpeechJob, runNonce: UUID) async throws {
         switch Self.currentProvider {
         case .elevenlabs:
@@ -1208,6 +1227,8 @@ final class SpeechPlaybackCoordinator {
         case .google:
             // Google doesn't have a simple REST streaming API, so use non-streaming
             try await synthesizeAndPlayGoogle(job: job, runNonce: runNonce)
+        case .local:
+            try await synthesizeAndPlayLocal(job: job, runNonce: runNonce)
         }
     }
     
@@ -1263,6 +1284,64 @@ final class SpeechPlaybackCoordinator {
         }
 
         // Wait for ffplay to finish
+        await withCheckedContinuation { continuation in
+            process.terminationHandler = { _ in
+                continuation.resume()
+            }
+        }
+
+        streamEnded = true
+        emitAudioMirrorEnd(streamId: streamId, status: "completed")
+    }
+
+    /// Local on-device TTS via pocket-tts Rust runtime.
+    private func synthesizeAndPlayLocal(job: SpeechJob, runNonce: UUID) async throws {
+        guard let ffplayPath = findFFPlayPath() else {
+            throw NSError(domain: "PiTalk", code: 404, userInfo: [
+                NSLocalizedDescriptionKey: "ffplay not found. Install with: brew install ffmpeg"
+            ])
+        }
+
+        let streamId = emitAudioMirrorStart(job: job, runNonce: runNonce)
+        var streamEnded = false
+        defer {
+            if !streamEnded {
+                emitAudioMirrorEnd(streamId: streamId, status: "failed")
+            }
+        }
+
+        let audioData = try await synthesizeWithLocal(job: job)
+        emitAudioMirrorChunk(streamId: streamId, data: audioData)
+
+        if !shouldContinue(runNonce: runNonce) {
+            streamEnded = true
+            emitAudioMirrorEnd(streamId: streamId, status: "interrupted")
+            return
+        }
+
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pitalk-local-\(UUID().uuidString).wav")
+        try audioData.write(to: tempURL)
+
+        defer {
+            try? FileManager.default.removeItem(at: tempURL)
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: ffplayPath)
+        process.arguments = [
+            "-nodisp",
+            "-autoexit",
+            "-loglevel", "quiet",
+            tempURL.path
+        ]
+
+        try process.run()
+
+        queue.sync {
+            self.currentProcess = process
+        }
+
         await withCheckedContinuation { continuation in
             process.terminationHandler = { _ in
                 continuation.resume()
@@ -2127,6 +2206,10 @@ struct SettingsTabView: View {
     @State private var showApiKey = false
     @State private var envImportMessage: String?
     @State private var envImportMessageColor: Color = .secondary
+    @State private var localModelInstalled = LocalTTSRuntime.shared.isModelInstalled()
+    @State private var localModelDownloading = false
+    @State private var localModelMessage: String?
+    @State private var localModelMessageColor: Color = .secondary
 
     private var currentProvider: SpeechPlaybackCoordinator.TTSProvider {
         SpeechPlaybackCoordinator.TTSProvider(rawValue: provider) ?? .elevenlabs
@@ -2137,9 +2220,19 @@ struct SettingsTabView: View {
     
     // Google voices - British & Australian
     let googleVoices = ["george", "emma", "oliver", "sophia", "charlotte", "william", "jack", "olivia", "isla", "liam"]
+
+    // Local on-device voices (pocket-tts)
+    let localVoices = ["alba", "fantine", "cosette", "marius", "eponine", "azelma", "javert"]
     
     private var availableVoices: [String] {
-        currentProvider == .elevenlabs ? elevenLabsVoices : googleVoices
+        switch currentProvider {
+        case .elevenlabs:
+            return elevenLabsVoices
+        case .google:
+            return googleVoices
+        case .local:
+            return localVoices
+        }
     }
     
     private var trimmedElevenLabsApiKey: String {
@@ -2158,11 +2251,36 @@ struct SettingsTabView: View {
         case .google:
             if !trimmedGoogleApiKey.isEmpty { return trimmedGoogleApiKey }
             return GoogleApiKeyManager.resolvedKey()
+        case .local:
+            return nil
         }
     }
 
     private var hasApiKey: Bool {
-        effectiveApiKey?.isEmpty == false
+        currentProvider == .local || effectiveApiKey?.isEmpty == false
+    }
+
+    private var hasElevenLabsKey: Bool {
+        !trimmedElevenLabsApiKey.isEmpty || !(ElevenLabsApiKeyManager.resolvedKey()?.isEmpty ?? true)
+    }
+
+    private var hasGoogleApiKey: Bool {
+        !trimmedGoogleApiKey.isEmpty || !(GoogleApiKeyManager.resolvedKey()?.isEmpty ?? true)
+    }
+
+    private var localRuntimeAvailable: Bool {
+        LocalTTSRuntime.shared.isRuntimeAvailable()
+    }
+
+    private var providerSummary: String {
+        switch currentProvider {
+        case .elevenlabs:
+            return "Scottish & British accents • Streaming support • Best quality"
+        case .google:
+            return "British & Australian accents • No streaming • Good quality"
+        case .local:
+            return "On-device Rust runtime • No API key • Bundled model or GitHub release download (~225MB)"
+        }
     }
     
     var body: some View {
@@ -2172,109 +2290,185 @@ struct SettingsTabView: View {
                 SettingsSectionHeader(title: "TTS Provider")
                 
                 VStack(alignment: .leading, spacing: 12) {
-                    Picker("Provider", selection: $provider) {
-                        Text("ElevenLabs").tag("elevenlabs")
-                        Text("Google Cloud").tag("google")
+                    HStack(spacing: 10) {
+                        providerCard(
+                            key: "elevenlabs",
+                            title: "ElevenLabs",
+                            subtitle: "Streaming · Cloud API",
+                            status: hasElevenLabsKey ? "API key ready" : "API key needed",
+                            statusColor: hasElevenLabsKey ? .green : .orange
+                        )
+
+                        providerCard(
+                            key: "google",
+                            title: "Google Cloud",
+                            subtitle: "Cloud API",
+                            status: hasGoogleApiKey ? "API key ready" : "API key needed",
+                            statusColor: hasGoogleApiKey ? .green : .orange
+                        )
+
+                        providerCard(
+                            key: "local",
+                            title: "Local",
+                            subtitle: "On-device",
+                            status: localModelInstalled ? "Model ready" : "Model optional",
+                            statusColor: localModelInstalled ? .green : .secondary
+                        )
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .onChange(of: provider) { newValue in
-                        if newValue == "elevenlabs" && !elevenLabsVoices.contains(voice) {
-                            voice = "ally"
-                        } else if newValue == "google" && !googleVoices.contains(voice) {
-                            voice = "george"
-                        }
-                    }
-                    
-                    Text(currentProvider == .elevenlabs 
-                        ? "Scottish & British accents • Streaming support • Best quality"
-                        : "British & Australian accents • No streaming • Good quality")
+
+                    Text(providerSummary)
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
                 .padding(.vertical, 10)
                 
-                // API KEY
-                SettingsSectionHeader(title: currentProvider == .elevenlabs ? "ElevenLabs API" : "Google Cloud API")
-                
-                VStack(alignment: .leading, spacing: 12) {
-                    if !hasApiKey {
-                        Text(currentProvider == .elevenlabs 
-                            ? "Add your ElevenLabs API key to start using PiTalk."
-                            : "Add your Google Cloud API key to start using PiTalk.")
-                            .font(.subheadline)
-                            .foregroundColor(.orange)
-                    }
-                    
-                    HStack(spacing: 8) {
-                        Group {
-                            if showApiKey {
-                                TextField("API Key", text: currentProvider == .elevenlabs ? $elevenLabsApiKey : $googleApiKey)
-                            } else {
-                                SecureField("API Key", text: currentProvider == .elevenlabs ? $elevenLabsApiKey : $googleApiKey)
-                            }
+                if currentProvider == .local {
+                    SettingsSectionHeader(title: "Local Model")
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 6) {
+                            Image(systemName: localRuntimeAvailable ? "cpu.fill" : "exclamationmark.triangle.fill")
+                                .foregroundColor(localRuntimeAvailable ? .green : .orange)
+                                .font(.caption)
+                            Text(localRuntimeAvailable ? "Local runtime ready" : "Local runtime binary not found")
+                                .font(.caption)
+                                .foregroundColor(localRuntimeAvailable ? .green : .orange)
                         }
-                        .textFieldStyle(.plain)
-                        .padding(8)
-                        .background(Color(NSColor.textBackgroundColor))
-                        .cornerRadius(6)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6)
-                                .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
-                        )
-                        
-                        Button(showApiKey ? "Hide" : "Show") {
-                            showApiKey.toggle()
+
+                        HStack(spacing: 6) {
+                            Image(systemName: localModelInstalled ? "checkmark.circle.fill" : "arrow.down.circle")
+                                .foregroundColor(localModelInstalled ? .green : .secondary)
+                                .font(.caption)
+                            Text(localModelInstalled ? "Model downloaded" : "Model not downloaded")
+                                .font(.caption)
+                                .foregroundColor(localModelInstalled ? .green : .secondary)
+                        }
+
+                        Button(localModelDownloading ? "Downloading…" : (localModelInstalled ? "Re-download Local Model" : "Download Local Model (~225 MB)")) {
+                            downloadLocalModel()
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
-                    }
-                    
-                    HStack(spacing: 12) {
-                        Button("Import from ~/.env") {
-                            if currentProvider == .elevenlabs {
-                                importElevenLabsApiKey()
-                            } else {
-                                importGoogleApiKey()
+                        .disabled(localModelDownloading || !localRuntimeAvailable)
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Model Download Path")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+
+                            HStack(alignment: .top, spacing: 8) {
+                                Text(LocalTTSRuntime.shared.downloadedModelsPath())
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                                    .textSelection(.enabled)
+                                    .lineLimit(2)
+                                    .truncationMode(.middle)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                                Button("Copy") {
+                                    let path = LocalTTSRuntime.shared.downloadedModelsPath()
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(path, forType: .string)
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.mini)
                             }
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        
-                        Text(currentProvider == .elevenlabs 
-                            ? "Looks for ELEVEN_API_KEY or ELEVENLABS_API_KEY"
-                            : "Looks for GOOGLE_TTS_API_KEY")
+
+                        Text("If bundled with the app, models are used offline immediately. Otherwise, PiTalk downloads a model pack from the matching GitHub release into this path.")
                             .font(.caption)
                             .foregroundColor(.secondary)
-                    }
-                    
-                    if let envImportMessage {
-                        Text(envImportMessage)
-                            .font(.caption)
-                            .foregroundStyle(envImportMessageColor)
-                    }
-                    
-                    HStack(spacing: 4) {
-                        if hasApiKey {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundColor(.green)
+
+                        if let localModelMessage {
+                            Text(localModelMessage)
                                 .font(.caption)
-                            Text("API key configured")
-                                .font(.caption)
-                                .foregroundColor(.green)
-                        } else {
-                            Image(systemName: "arrow.up.right")
-                                .foregroundColor(.orange)
-                                .font(.caption)
-                            Text(currentProvider == .elevenlabs 
-                                ? "Get your API key from elevenlabs.io"
-                                : "Get your API key from console.cloud.google.com")
-                                .font(.caption)
-                                .foregroundColor(.orange)
+                                .foregroundStyle(localModelMessageColor)
                         }
                     }
+                    .padding(.vertical, 10)
+                } else {
+                    // API KEY
+                    SettingsSectionHeader(title: currentProvider == .elevenlabs ? "ElevenLabs API" : "Google Cloud API")
+                    
+                    VStack(alignment: .leading, spacing: 12) {
+                        if !hasApiKey {
+                            Text(currentProvider == .elevenlabs 
+                                ? "Add your ElevenLabs API key to start using PiTalk."
+                                : "Add your Google Cloud API key to start using PiTalk.")
+                                .font(.subheadline)
+                                .foregroundColor(.orange)
+                        }
+                        
+                        HStack(spacing: 8) {
+                            Group {
+                                if showApiKey {
+                                    TextField("API Key", text: currentProvider == .elevenlabs ? $elevenLabsApiKey : $googleApiKey)
+                                } else {
+                                    SecureField("API Key", text: currentProvider == .elevenlabs ? $elevenLabsApiKey : $googleApiKey)
+                                }
+                            }
+                            .textFieldStyle(.plain)
+                            .padding(8)
+                            .background(Color(NSColor.textBackgroundColor))
+                            .cornerRadius(6)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
+                            )
+                            
+                            Button(showApiKey ? "Hide" : "Show") {
+                                showApiKey.toggle()
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                        
+                        HStack(spacing: 12) {
+                            Button("Import from ~/.env") {
+                                if currentProvider == .elevenlabs {
+                                    importElevenLabsApiKey()
+                                } else {
+                                    importGoogleApiKey()
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            
+                            Text(currentProvider == .elevenlabs 
+                                ? "Looks for ELEVEN_API_KEY or ELEVENLABS_API_KEY"
+                                : "Looks for GOOGLE_TTS_API_KEY")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        
+                        if let envImportMessage {
+                            Text(envImportMessage)
+                                .font(.caption)
+                                .foregroundStyle(envImportMessageColor)
+                        }
+                        
+                        HStack(spacing: 4) {
+                            if hasApiKey {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.green)
+                                    .font(.caption)
+                                Text("API key configured")
+                                    .font(.caption)
+                                    .foregroundColor(.green)
+                            } else {
+                                Image(systemName: "arrow.up.right")
+                                    .foregroundColor(.orange)
+                                    .font(.caption)
+                                Text(currentProvider == .elevenlabs 
+                                    ? "Get your API key from elevenlabs.io"
+                                    : "Get your API key from console.cloud.google.com")
+                                    .font(.caption)
+                                    .foregroundColor(.orange)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 10)
                 }
-                .padding(.vertical, 10)
                 
                 // VOICE
                 SettingsSectionHeader(title: "Voice")
@@ -2294,7 +2488,7 @@ struct SettingsTabView: View {
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
-                        .disabled(isPreviewPlaying || !hasApiKey)
+                        .disabled(isPreviewPlaying || !hasApiKey || (currentProvider == .local && (!localRuntimeAvailable || !localModelInstalled)))
                     }
                 }
                 
@@ -2333,9 +2527,107 @@ struct SettingsTabView: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
         }
+        .onAppear {
+            refreshLocalModelStatus()
+            selectProvider(provider)
+        }
 
     }
     
+    @ViewBuilder
+    private func providerCard(key: String,
+                              title: String,
+                              subtitle: String,
+                              status: String,
+                              statusColor: Color) -> some View {
+        Button {
+            selectProvider(key)
+        } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(title)
+                        .font(.headline)
+                    Spacer()
+                    if provider == key {
+                        Image(systemName: "checkmark")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundColor(.accentColor)
+                    }
+                }
+
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                Text(status)
+                    .font(.caption)
+                    .foregroundColor(statusColor)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, minHeight: 86, alignment: .topLeading)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color(NSColor.controlBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(provider == key ? Color.accentColor : Color.secondary.opacity(0.2), lineWidth: provider == key ? 2 : 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func selectProvider(_ newValue: String) {
+        provider = newValue
+
+        if newValue == "elevenlabs" && !elevenLabsVoices.contains(voice) {
+            voice = "ally"
+        } else if newValue == "google" && !googleVoices.contains(voice) {
+            voice = "george"
+        } else if newValue == "local" && !localVoices.contains(voice) {
+            voice = "alba"
+        }
+
+        if newValue != "local" {
+            LocalTTSRuntime.shared.stopServer()
+        }
+    }
+
+    func refreshLocalModelStatus() {
+        localModelInstalled = LocalTTSRuntime.shared.isModelInstalled()
+        if localModelInstalled, localModelMessage == nil {
+            localModelMessage = "Local model is ready."
+            localModelMessageColor = .green
+        }
+    }
+
+    func downloadLocalModel() {
+        guard !localModelDownloading else { return }
+        localModelDownloading = true
+        localModelMessage = nil
+
+        Task {
+            do {
+                try await LocalTTSRuntime.shared.downloadModelIfNeeded(preferredVoice: voice)
+                await MainActor.run {
+                    localModelDownloading = false
+                    localModelInstalled = LocalTTSRuntime.shared.isModelInstalled()
+                    localModelMessage = localModelInstalled
+                        ? "Local model downloaded successfully."
+                        : "Model download finished, but files were not detected."
+                    localModelMessageColor = localModelInstalled ? .green : .orange
+                }
+            } catch {
+                await MainActor.run {
+                    localModelDownloading = false
+                    localModelInstalled = LocalTTSRuntime.shared.isModelInstalled()
+                    localModelMessage = error.localizedDescription
+                    localModelMessageColor = .orange
+                }
+            }
+        }
+    }
+
     func voiceDescription(_ voice: String) -> String {
         switch voice.lowercased() {
         case "george": return "British male (Studio quality)"
@@ -2396,30 +2688,85 @@ struct SettingsTabView: View {
     
     func previewVoice(_ voiceName: String) {
         guard !isPreviewPlaying else { return }
-        guard let apiKey = effectiveApiKey, !apiKey.isEmpty else { return }
+
+        if currentProvider != .local {
+            guard let apiKey = effectiveApiKey, !apiKey.isEmpty else { return }
+            isPreviewPlaying = true
+
+            let text = "Hi, this is \(voiceName.capitalized). I'm ready to help you with your coding projects."
+
+            Task {
+                do {
+                    let audioData: Data
+                    let fileExtension: String
+
+                    if currentProvider == .elevenlabs {
+                        audioData = try await previewElevenLabsVoice(voiceName: voiceName, text: text, apiKey: apiKey)
+                        fileExtension = "mp3"
+                    } else {
+                        audioData = try await previewGoogleVoice(voiceName: voiceName, text: text, apiKey: apiKey)
+                        fileExtension = "mp3"
+                    }
+
+                    let tempFile = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("voice_preview.\(fileExtension)")
+                    try audioData.write(to: tempFile)
+
+                    let ffplayPath = ["/opt/homebrew/bin/ffplay", "/usr/local/bin/ffplay"].first {
+                        FileManager.default.fileExists(atPath: $0)
+                    }
+
+                    let process = Process()
+                    if let ffplay = ffplayPath {
+                        process.executableURL = URL(fileURLWithPath: ffplay)
+                        process.arguments = ["-nodisp", "-autoexit", "-loglevel", "quiet", tempFile.path]
+                    } else {
+                        process.executableURL = URL(fileURLWithPath: "/usr/bin/afplay")
+                        process.arguments = [tempFile.path]
+                    }
+
+                    process.terminationHandler = { _ in
+                        DispatchQueue.main.async {
+                            self.isPreviewPlaying = false
+                        }
+                        try? FileManager.default.removeItem(at: tempFile)
+                    }
+                    try process.run()
+                } catch {
+                    print("Voice preview error: \(error)")
+                    await MainActor.run {
+                        isPreviewPlaying = false
+                    }
+                }
+            }
+            return
+        }
+
+        // Local preview
+        guard localRuntimeAvailable else {
+            localModelMessage = "Local runtime binary not found. Reinstall PiTalk or install pocket-tts-cli."
+            localModelMessageColor = .orange
+            return
+        }
+        guard localModelInstalled else {
+            localModelMessage = "Download the local model first."
+            localModelMessageColor = .orange
+            return
+        }
+
         isPreviewPlaying = true
-        
-        let text = "Hi, this is \(voiceName.capitalized). I'm ready to help you with your coding projects."
-        
+        let text = "Hi, this is \(voiceName.capitalized). I am running locally on your Mac."
+
         Task {
             do {
-                let audioData: Data
-                
-                if currentProvider == .elevenlabs {
-                    audioData = try await previewElevenLabsVoice(voiceName: voiceName, text: text, apiKey: apiKey)
-                } else {
-                    audioData = try await previewGoogleVoice(voiceName: voiceName, text: text, apiKey: apiKey)
-                }
-                
-                // Write MP3 to temp file and play
-                let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("voice_preview.mp3")
+                let audioData = try await LocalTTSRuntime.shared.synthesize(text: text, voice: voiceName)
+                let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("voice_preview.wav")
                 try audioData.write(to: tempFile)
-                
-                // Play using ffplay or afplay
-                let ffplayPath = ["/opt/homebrew/bin/ffplay", "/usr/local/bin/ffplay"].first { 
-                    FileManager.default.fileExists(atPath: $0) 
+
+                let ffplayPath = ["/opt/homebrew/bin/ffplay", "/usr/local/bin/ffplay"].first {
+                    FileManager.default.fileExists(atPath: $0)
                 }
-                
+
                 let process = Process()
                 if let ffplay = ffplayPath {
                     process.executableURL = URL(fileURLWithPath: ffplay)
@@ -2428,7 +2775,7 @@ struct SettingsTabView: View {
                     process.executableURL = URL(fileURLWithPath: "/usr/bin/afplay")
                     process.arguments = [tempFile.path]
                 }
-                
+
                 process.terminationHandler = { _ in
                     DispatchQueue.main.async {
                         self.isPreviewPlaying = false
@@ -2440,6 +2787,8 @@ struct SettingsTabView: View {
                 print("Voice preview error: \(error)")
                 await MainActor.run {
                     isPreviewPlaying = false
+                    localModelMessage = error.localizedDescription
+                    localModelMessageColor = .orange
                 }
             }
         }
