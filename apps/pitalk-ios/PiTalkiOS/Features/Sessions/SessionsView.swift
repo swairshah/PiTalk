@@ -235,10 +235,6 @@ private struct SessionGroupSection: View {
         return "waiting"
     }
 
-    private var latestSnippet: String? {
-        sessions.compactMap { $0.currentText ?? $0.lastSpokenText }.first
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
@@ -270,15 +266,6 @@ private struct SessionGroupSection: View {
             .buttonStyle(.plain)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-
-            if let snippet = latestSnippet {
-                Text(snippet)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 6)
-            }
 
             if isExpanded {
                 // Stable sort by pid so sessions don't jump around between polls.

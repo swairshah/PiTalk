@@ -2,14 +2,61 @@ import PhotosUI
 import SwiftUI
 import UIKit
 
+/// Coalesced history item to avoid fragmented one-line chunks in the UI.
+private struct SessionHistoryGroup: Identifiable {
+    let id: String
+    let sourceApp: String?
+    let sessionId: String?
+    let pid: Int?
+    let status: String
+    var timestampMs: Int64
+    private var texts: [String]
+
+    init(entry: RemoteHistoryEntry) {
+        id = entry.id
+        sourceApp = entry.sourceApp
+        sessionId = entry.sessionId
+        pid = entry.pid
+        status = entry.status
+        timestampMs = entry.timestampMs
+        texts = [entry.text]
+    }
+
+    var chunkCount: Int { texts.count }
+
+    var displayText: String {
+        texts.joined(separator: " ")
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func canMerge(with entry: RemoteHistoryEntry) -> Bool {
+        guard sourceApp == entry.sourceApp,
+              sessionId == entry.sessionId,
+              pid == entry.pid,
+              status == entry.status
+        else {
+            return false
+        }
+
+        // Short coalescing window to group streaming chunks from one response.
+        return abs(timestampMs - entry.timestampMs) <= 15_000
+    }
+
+    mutating func append(_ entry: RemoteHistoryEntry) {
+        texts.append(entry.text)
+        timestampMs = entry.timestampMs
+    }
+}
+
 /// A unified timeline item that merges TTS history and user-sent messages.
 private enum TimelineItem: Identifiable {
-    case history(RemoteHistoryEntry)
+    case history(SessionHistoryGroup)
     case sent(SentMessage)
 
     var id: String {
         switch self {
-        case .history(let e): return "h-\(e.id)"
+        case .history(let e): return "h-\(e.id)-\(e.chunkCount)"
         case .sent(let m): return "s-\(m.id.uuidString)"
         }
     }
@@ -34,8 +81,8 @@ struct SessionDetailView: View {
         store.socket.snapshot.sessions.first(where: { $0.id == sessionId })
     }
 
-    /// History entries for this session in chronological order.
-    private var history: [RemoteHistoryEntry] {
+    /// Raw history entries for this session in chronological order.
+    private var rawHistory: [RemoteHistoryEntry] {
         store.socket.snapshot.history.filter { entry in
             if let sid = entry.sessionId, let sessionSid = session?.sessionId, sid == sessionSid {
                 if let entryPid = entry.pid, let sessPid = session?.pid {
@@ -51,7 +98,23 @@ struct SessionDetailView: View {
         .reversed()
     }
 
-    /// Merged timeline: history + sent messages, sorted chronologically.
+    /// Coalesced history that merges adjacent streaming chunks from one response.
+    private var history: [SessionHistoryGroup] {
+        var grouped: [SessionHistoryGroup] = []
+
+        for entry in rawHistory {
+            if var last = grouped.last, last.canMerge(with: entry) {
+                last.append(entry)
+                grouped[grouped.count - 1] = last
+            } else {
+                grouped.append(SessionHistoryGroup(entry: entry))
+            }
+        }
+
+        return grouped
+    }
+
+    /// Merged timeline: coalesced history + sent messages, sorted chronologically.
     private var timeline: [TimelineItem] {
         var items: [TimelineItem] = history.map { .history($0) }
         if let sent = store.sentMessages[sessionId] {
@@ -196,14 +259,21 @@ struct SessionDetailView: View {
     // MARK: - Timeline rows
 
     /// TTS history entry (response from the system).
-    private func historyRow(_ entry: RemoteHistoryEntry) -> some View {
+    private func historyRow(_ entry: SessionHistoryGroup) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(entry.text)
+            Text(entry.displayText)
                 .font(.subheadline)
             HStack {
                 Text(entry.status.capitalized)
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(statusColor(entry.status))
+
+                if entry.chunkCount > 1 {
+                    Text("• \(entry.chunkCount) chunks")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
                 Spacer()
                 Text(relativeDate(entry.timestampMs))
                     .font(.caption2)
@@ -311,7 +381,11 @@ struct SessionDetailView: View {
 
                 PushToTalkButton(
                     isRecording: ptt.isRecording,
-                    onPress: { ptt.startRecording() },
+                    onPress: {
+                        store.selectedSessionId = sessionId
+                        store.interruptForPushToTalk()
+                        ptt.startRecording()
+                    },
                     onRelease: {
                         Task {
                             if let transcript = await ptt.stopAndTranscribe(), !transcript.isEmpty {

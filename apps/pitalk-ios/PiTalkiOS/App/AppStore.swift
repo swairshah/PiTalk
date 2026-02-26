@@ -132,6 +132,11 @@ final class AppStore: ObservableObject {
         Task { try? await socket.stopAll() }
     }
 
+    func interruptForPushToTalk() {
+        socket.clearBufferedAudioPlayback()
+        Task { try? await socket.stopAll() }
+    }
+
     func setRemoteAudioStreaming(enabled: Bool) {
         remoteAudioStreamingRequested = enabled
         syncAudioStreamingState()

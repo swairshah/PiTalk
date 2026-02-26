@@ -330,12 +330,16 @@ final class RemoteSocketClient: ObservableObject {
         audioStreamEnabled = enabled
         lastError = nil
         if !enabled {
-            audioPlayer?.stop()
-            audioPlayer = nil
-            incomingAudioStreams.removeAll()
-            completedAudioQueue.removeAll()
-            audioPlaybackActive = false
+            clearBufferedAudioPlayback()
         }
+    }
+
+    func clearBufferedAudioPlayback() {
+        audioPlayer?.stop()
+        audioPlayer = nil
+        incomingAudioStreams.removeAll()
+        completedAudioQueue.removeAll()
+        audioPlaybackActive = false
     }
 
     private func sendAudioStreamCommand(enabled: Bool) async throws -> [String: Any] {
