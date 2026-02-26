@@ -138,6 +138,28 @@ final class LocalTTSRuntime {
         return data
     }
 
+    func streamSynthesize(text: String, voice: String) async throws -> (URLSession.AsyncBytes, URLResponse) {
+        guard isModelInstalled() else {
+            throw RuntimeError.modelNotInstalled
+        }
+
+        try await ensureServerRunning()
+
+        let url = URL(string: "http://\(host):\(port)/stream")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 90
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body: [String: Any] = [
+            "text": text,
+            "voice": voice
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        return try await URLSession.shared.bytes(for: request)
+    }
+
     func stopServer() {
         let process: Process? = {
             lock.lock()

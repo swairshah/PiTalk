@@ -710,6 +710,7 @@ final class SpeechPlaybackCoordinator {
     private var currentJobHistoryId: UUID?
     private var currentQueueKey: String?
     private var currentRunNonce: UUID?
+    private var ffplayRawMonoArgsByPath: [String: [String]] = [:]
 
     private var isMicrophoneActive = false
     
@@ -1067,6 +1068,24 @@ final class SpeechPlaybackCoordinator {
             return try await synthesizeWithLocal(job: job)
         }
     }
+
+    private func configuredSpeechSpeed() -> Double {
+        let raw = UserDefaults.standard.object(forKey: "speechSpeed") as? Double ?? 1.0
+        let rounded = (raw * 100).rounded() / 100
+        return min(1.5, max(0.7, rounded))
+    }
+
+    private func elevenLabsConfiguredSpeechSpeed() -> Double {
+        // ElevenLabs starts failing on higher values, so cap at 1.2.
+        let clamped = min(1.2, configuredSpeechSpeed())
+        return (clamped * 100).rounded() / 100
+    }
+
+    private func localPlaybackTempoFilter() -> String? {
+        let speed = configuredSpeechSpeed()
+        guard abs(speed - 1.0) > 0.01 else { return nil }
+        return String(format: "atempo=%.2f", speed)
+    }
     
     private func synthesizeWithElevenLabs(job: SpeechJob) async throws -> Data {
         // Get API key from environment, app settings, or ~/.env
@@ -1087,13 +1106,19 @@ final class SpeechPlaybackCoordinator {
         request.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
         request.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
 
+        var voiceSettings: [String: Any] = [
+            "stability": 0.5,
+            "similarity_boost": 0.75
+        ]
+        let speed = elevenLabsConfiguredSpeechSpeed()
+        if abs(speed - 1.0) > 0.01 {
+            voiceSettings["speed"] = speed
+        }
+
         let body: [String: Any] = [
             "text": job.text,
             "model_id": "eleven_monolingual_v1",
-            "voice_settings": [
-                "stability": 0.5,
-                "similarity_boost": 0.75
-            ]
+            "voice_settings": voiceSettings
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
@@ -1128,9 +1153,8 @@ final class SpeechPlaybackCoordinator {
         request.timeoutInterval = 30
         request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
         
-        // Get speech speed from settings (default 1.0)
-        let rawSpeed = UserDefaults.standard.object(forKey: "speechSpeed") as? Double ?? 1.0
-        let speed = (rawSpeed * 100).rounded() / 100
+        // Google can use the full slider range.
+        let speed = configuredSpeechSpeed()
         
         let body: [String: Any] = [
             "input": ["text": job.text],
@@ -1219,7 +1243,7 @@ final class SpeechPlaybackCoordinator {
     }
 
     /// Streaming TTS - uses fast model and streaming API for lower latency.
-    /// Local mode is on-device and uses a local Rust runtime.
+    /// Local mode now streams raw PCM from the local runtime endpoint.
     private func synthesizeAndPlayStreaming(job: SpeechJob, runNonce: UUID) async throws {
         switch Self.currentProvider {
         case .elevenlabs:
@@ -1228,7 +1252,12 @@ final class SpeechPlaybackCoordinator {
             // Google doesn't have a simple REST streaming API, so use non-streaming
             try await synthesizeAndPlayGoogle(job: job, runNonce: runNonce)
         case .local:
-            try await synthesizeAndPlayLocal(job: job, runNonce: runNonce)
+            do {
+                try await synthesizeAndPlayStreamingLocal(job: job, runNonce: runNonce)
+            } catch {
+                print("PiTalk: Local streaming failed, falling back to buffered playback: \(error.localizedDescription)")
+                try await synthesizeAndPlayLocalBuffered(job: job, runNonce: runNonce)
+            }
         }
     }
     
@@ -1294,8 +1323,124 @@ final class SpeechPlaybackCoordinator {
         emitAudioMirrorEnd(streamId: streamId, status: "completed")
     }
 
-    /// Local on-device TTS via pocket-tts Rust runtime.
-    private func synthesizeAndPlayLocal(job: SpeechJob, runNonce: UUID) async throws {
+    /// Local on-device TTS via pocket-tts Rust runtime stream endpoint.
+    private func synthesizeAndPlayStreamingLocal(job: SpeechJob, runNonce: UUID) async throws {
+        guard let ffplayPath = findFFPlayPath() else {
+            throw NSError(domain: "PiTalk", code: 404, userInfo: [
+                NSLocalizedDescriptionKey: "ffplay not found. Install with: brew install ffmpeg"
+            ])
+        }
+
+        let streamId = emitAudioMirrorStart(job: job, runNonce: runNonce)
+        var streamEnded = false
+        defer {
+            if !streamEnded {
+                emitAudioMirrorEnd(streamId: streamId, status: "failed")
+            }
+        }
+
+        let (asyncBytes, response) = try await LocalTTSRuntime.shared.streamSynthesize(text: job.text, voice: job.voice)
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            throw NSError(domain: "PiTalk", code: 500, userInfo: [
+                NSLocalizedDescriptionKey: "Local runtime stream failed"
+            ])
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: ffplayPath)
+        let inputPipe = Pipe()
+        process.standardInput = inputPipe
+
+        var arguments = [
+            "-f", "s16le",
+            "-ar", "24000",
+        ]
+        arguments.append(contentsOf: rawPCMInputArguments(for: ffplayPath))
+        arguments.append(contentsOf: [
+            "-nodisp",
+            "-autoexit",
+            "-loglevel", "quiet",
+        ])
+        if let tempoFilter = localPlaybackTempoFilter() {
+            arguments.append(contentsOf: ["-af", tempoFilter])
+        }
+        arguments.append("pipe:0")
+        process.arguments = arguments
+
+        try process.run()
+
+        queue.sync {
+            self.currentProcess = process
+        }
+
+        // Some ffplay builds can exit immediately on unsupported flags.
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        guard process.isRunning else {
+            throw NSError(domain: "PiTalk", code: 500, userInfo: [
+                NSLocalizedDescriptionKey: "ffplay exited before local stream playback started"
+            ])
+        }
+
+        let stdinHandle = inputPipe.fileHandleForWriting
+        var buffer = Data()
+        var mirroredPCM = Data()
+        let flushSize = 4096
+
+        for try await byte in asyncBytes {
+            if !shouldContinue(runNonce: runNonce) {
+                try? stdinHandle.close()
+                process.terminate()
+                streamEnded = true
+                emitAudioMirrorEnd(streamId: streamId, status: "interrupted")
+                return
+            }
+
+            buffer.append(byte)
+            if buffer.count >= flushSize {
+                do {
+                    try stdinHandle.write(contentsOf: buffer)
+                } catch {
+                    throw NSError(domain: "PiTalk", code: 500, userInfo: [
+                        NSLocalizedDescriptionKey: "ffplay stdin write failed: \(error.localizedDescription)"
+                    ])
+                }
+                mirroredPCM.append(buffer)
+                buffer.removeAll(keepingCapacity: true)
+            }
+        }
+
+        if !buffer.isEmpty {
+            do {
+                try stdinHandle.write(contentsOf: buffer)
+            } catch {
+                throw NSError(domain: "PiTalk", code: 500, userInfo: [
+                    NSLocalizedDescriptionKey: "ffplay stdin tail write failed: \(error.localizedDescription)"
+                ])
+            }
+            mirroredPCM.append(buffer)
+        }
+
+        try? stdinHandle.close()
+
+        // Local stream endpoint returns raw PCM. Keep mirror payload compatible
+        // with iOS AVAudioPlayer by wrapping PCM into a WAV container.
+        if !mirroredPCM.isEmpty {
+            let wavData = wavFromPCM16Mono24k(mirroredPCM)
+            emitAudioMirrorChunk(streamId: streamId, data: wavData)
+        }
+
+        await withCheckedContinuation { continuation in
+            process.terminationHandler = { _ in
+                continuation.resume()
+            }
+        }
+
+        streamEnded = true
+        emitAudioMirrorEnd(streamId: streamId, status: "completed")
+    }
+
+    /// Fallback local playback path for ffplay variants that cannot handle raw stream args.
+    private func synthesizeAndPlayLocalBuffered(job: SpeechJob, runNonce: UUID) async throws {
         guard let ffplayPath = findFFPlayPath() else {
             throw NSError(domain: "PiTalk", code: 404, userInfo: [
                 NSLocalizedDescriptionKey: "ffplay not found. Install with: brew install ffmpeg"
@@ -1329,12 +1474,16 @@ final class SpeechPlaybackCoordinator {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: ffplayPath)
-        process.arguments = [
+        var arguments = [
             "-nodisp",
             "-autoexit",
             "-loglevel", "quiet",
-            tempURL.path
         ]
+        if let tempoFilter = localPlaybackTempoFilter() {
+            arguments.append(contentsOf: ["-af", tempoFilter])
+        }
+        arguments.append(tempURL.path)
+        process.arguments = arguments
 
         try process.run()
 
@@ -1350,6 +1499,54 @@ final class SpeechPlaybackCoordinator {
 
         streamEnded = true
         emitAudioMirrorEnd(streamId: streamId, status: "completed")
+    }
+
+    private func wavFromPCM16Mono24k(_ pcm: Data) -> Data {
+        let sampleRate: UInt32 = 24_000
+        let channels: UInt16 = 1
+        let bitsPerSample: UInt16 = 16
+        let byteRate: UInt32 = sampleRate * UInt32(channels) * UInt32(bitsPerSample / 8)
+        let blockAlign: UInt16 = channels * (bitsPerSample / 8)
+        let subchunk2Size = UInt32(pcm.count)
+        let chunkSize = 36 + subchunk2Size
+
+        var data = Data()
+        data.append("RIFF".data(using: .ascii)!)
+
+        var chunkSizeLE = chunkSize.littleEndian
+        withUnsafeBytes(of: &chunkSizeLE) { data.append(contentsOf: $0) }
+
+        data.append("WAVE".data(using: .ascii)!)
+        data.append("fmt ".data(using: .ascii)!)
+
+        var subchunk1SizeLE = UInt32(16).littleEndian
+        withUnsafeBytes(of: &subchunk1SizeLE) { data.append(contentsOf: $0) }
+
+        var audioFormatLE = UInt16(1).littleEndian
+        withUnsafeBytes(of: &audioFormatLE) { data.append(contentsOf: $0) }
+
+        var channelsLE = channels.littleEndian
+        withUnsafeBytes(of: &channelsLE) { data.append(contentsOf: $0) }
+
+        var sampleRateLE = sampleRate.littleEndian
+        withUnsafeBytes(of: &sampleRateLE) { data.append(contentsOf: $0) }
+
+        var byteRateLE = byteRate.littleEndian
+        withUnsafeBytes(of: &byteRateLE) { data.append(contentsOf: $0) }
+
+        var blockAlignLE = blockAlign.littleEndian
+        withUnsafeBytes(of: &blockAlignLE) { data.append(contentsOf: $0) }
+
+        var bitsPerSampleLE = bitsPerSample.littleEndian
+        withUnsafeBytes(of: &bitsPerSampleLE) { data.append(contentsOf: $0) }
+
+        data.append("data".data(using: .ascii)!)
+
+        var subchunk2SizeLE = subchunk2Size.littleEndian
+        withUnsafeBytes(of: &subchunk2SizeLE) { data.append(contentsOf: $0) }
+
+        data.append(pcm)
+        return data
     }
     
     /// ElevenLabs streaming TTS
@@ -1392,10 +1589,8 @@ final class SpeechPlaybackCoordinator {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
 
-        // Get speech speed from settings (default 1.0)
-        let rawSpeed = UserDefaults.standard.object(forKey: "speechSpeed") as? Double ?? 1.0
-        // Round to 2 decimal places to avoid floating point precision issues in JSON
-        let speed = (rawSpeed * 100).rounded() / 100
+        // ElevenLabs has a strict upper bound in practice; cap to 1.2.
+        let speed = elevenLabsConfiguredSpeechSpeed()
         
         if ProcessInfo.processInfo.environment["PITALK_DEBUG"] == "1" {
             print("PiTalk: Synthesizing with speed=\(speed), voice=\(job.voice), text=\(job.text.prefix(50))...")
@@ -1589,6 +1784,40 @@ final class SpeechPlaybackCoordinator {
                 continuation.resume()
             }
         }
+    }
+
+    private func rawPCMInputArguments(for ffplayPath: String) -> [String] {
+        if let cached = ffplayRawMonoArgsByPath[ffplayPath] {
+            return cached
+        }
+
+        // Prefer modern option first; fall back to legacy -ac when needed.
+        var detected = ["-ch_layout", "mono"]
+
+        let probe = Process()
+        probe.executableURL = URL(fileURLWithPath: ffplayPath)
+        probe.arguments = ["-h", "full"]
+
+        let out = Pipe()
+        let err = Pipe()
+        probe.standardOutput = out
+        probe.standardError = err
+
+        if (try? probe.run()) != nil {
+            probe.waitUntilExit()
+            var output = out.fileHandleForReading.readDataToEndOfFile()
+            output.append(err.fileHandleForReading.readDataToEndOfFile())
+            if let text = String(data: output, encoding: .utf8) {
+                if text.contains("-ch_layout") {
+                    detected = ["-ch_layout", "mono"]
+                } else if text.contains("\n  -ac") || text.contains(" -ac ") {
+                    detected = ["-ac", "1"]
+                }
+            }
+        }
+
+        ffplayRawMonoArgsByPath[ffplayPath] = detected
+        return detected
     }
 
     private func findFFPlayPath() -> String? {
@@ -1915,7 +2144,7 @@ struct SessionsTabView: View {
                     Image(systemName: "hare")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Slider(value: $monitor.speechSpeed, in: 0.7...1.2, step: 0.05)
+                    Slider(value: $monitor.speechSpeed, in: 0.7...1.5, step: 0.05)
                         .frame(width: 80)
                     Text(String(format: "%.1fx", monitor.speechSpeed))
                         .font(.system(.caption, design: .monospaced))
@@ -2770,7 +2999,12 @@ struct SettingsTabView: View {
                 let process = Process()
                 if let ffplay = ffplayPath {
                     process.executableURL = URL(fileURLWithPath: ffplay)
-                    process.arguments = ["-nodisp", "-autoexit", "-loglevel", "quiet", tempFile.path]
+                    var args = ["-nodisp", "-autoexit", "-loglevel", "quiet"]
+                    if let tempoFilter = localPreviewTempoFilter() {
+                        args.append(contentsOf: ["-af", tempoFilter])
+                    }
+                    args.append(tempFile.path)
+                    process.arguments = args
                 } else {
                     process.executableURL = URL(fileURLWithPath: "/usr/bin/afplay")
                     process.arguments = [tempFile.path]
@@ -2792,6 +3026,13 @@ struct SettingsTabView: View {
                 }
             }
         }
+    }
+
+    private func localPreviewTempoFilter() -> String? {
+        let raw = UserDefaults.standard.object(forKey: "speechSpeed") as? Double ?? 1.0
+        let speed = min(1.5, max(0.7, (raw * 100).rounded() / 100))
+        guard abs(speed - 1.0) > 0.01 else { return nil }
+        return String(format: "atempo=%.2f", speed)
     }
     
     func previewElevenLabsVoice(voiceName: String, text: String, apiKey: String) async throws -> Data {

@@ -66,7 +66,7 @@ struct StatusBarContentView: View {
                         Image(systemName: "hare")
                             .font(.system(size: 9))
                             .foregroundStyle(.secondary)
-                        Slider(value: $monitor.speechSpeed, in: 0.7...1.2, step: 0.05)
+                        Slider(value: $monitor.speechSpeed, in: 0.7...1.5, step: 0.05)
                             .frame(width: 50)
                             .controlSize(.mini)
                         Text(String(format: "%.1fx", monitor.speechSpeed))
@@ -74,7 +74,7 @@ struct StatusBarContentView: View {
                             .foregroundStyle(.secondary)
                             .frame(width: 28)
                     }
-                    .help("Speech speed: \(String(format: "%.2f", monitor.speechSpeed))x (0.7-1.2)")
+                    .help("Speech speed: \(String(format: "%.2f", monitor.speechSpeed))x (0.7-1.5)")
                     
                     Divider()
                         .frame(height: 12)

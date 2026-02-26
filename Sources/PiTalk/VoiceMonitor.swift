@@ -133,10 +133,11 @@ final class VoiceMonitor: ObservableObject {
         }
     }
     
-    // Speech speed (0.7 to 1.2, default 1.0) - ElevenLabs streaming API limit
-    @Published var speechSpeed: Double = min(1.2, max(0.7, UserDefaults.standard.object(forKey: "speechSpeed") as? Double ?? 1.0)) {
+    // Speech speed slider (0.7 to 1.5, default 1.0).
+    // Provider-specific caps are applied at synthesis/playback time.
+    @Published var speechSpeed: Double = min(1.5, max(0.7, UserDefaults.standard.object(forKey: "speechSpeed") as? Double ?? 1.0)) {
         didSet {
-            let clamped = min(1.2, max(0.7, speechSpeed))
+            let clamped = min(1.5, max(0.7, speechSpeed))
             if clamped != speechSpeed {
                 speechSpeed = clamped
             } else {
