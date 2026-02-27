@@ -1255,8 +1255,13 @@ final class SpeechPlaybackCoordinator {
             do {
                 try await synthesizeAndPlayStreamingLocal(job: job, runNonce: runNonce)
             } catch {
-                print("PiTalk: Local streaming failed, falling back to buffered playback: \(error.localizedDescription)")
-                try await synthesizeAndPlayLocalBuffered(job: job, runNonce: runNonce)
+                print("PiTalk: Local streaming failed (\(error.localizedDescription)), falling back to buffered playback")
+                do {
+                    try await synthesizeAndPlayLocalBuffered(job: job, runNonce: runNonce)
+                } catch {
+                    print("PiTalk: Buffered playback also failed (\(error.localizedDescription)), falling back to plain WAV playback")
+                    try await synthesizeAndPlayLocalPlain(job: job, runNonce: runNonce)
+                }
             }
         }
     }
@@ -1495,6 +1500,52 @@ final class SpeechPlaybackCoordinator {
             process.terminationHandler = { _ in
                 continuation.resume()
             }
+        }
+
+        streamEnded = true
+        emitAudioMirrorEnd(streamId: streamId, status: "completed")
+    }
+
+    /// Last-resort fallback: synthesize to WAV, play with simplest possible ffplay args.
+    /// No tempo filter, no special flags — just `ffplay -nodisp -autoexit file.wav`.
+    private func synthesizeAndPlayLocalPlain(job: SpeechJob, runNonce: UUID) async throws {
+        guard let ffplayPath = findFFPlayPath() else {
+            throw NSError(domain: "PiTalk", code: 404, userInfo: [
+                NSLocalizedDescriptionKey: "ffplay not found. Install with: brew install ffmpeg"
+            ])
+        }
+
+        let streamId = emitAudioMirrorStart(job: job, runNonce: runNonce)
+        var streamEnded = false
+        defer {
+            if !streamEnded {
+                emitAudioMirrorEnd(streamId: streamId, status: "failed")
+            }
+        }
+
+        let audioData = try await synthesizeWithLocal(job: job)
+        emitAudioMirrorChunk(streamId: streamId, data: audioData)
+
+        if !shouldContinue(runNonce: runNonce) {
+            streamEnded = true
+            emitAudioMirrorEnd(streamId: streamId, status: "interrupted")
+            return
+        }
+
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pitalk-local-plain-\(UUID().uuidString).wav")
+        try audioData.write(to: tempURL)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: ffplayPath)
+        process.arguments = ["-nodisp", "-autoexit", "-loglevel", "quiet", tempURL.path]
+
+        try process.run()
+        queue.sync { self.currentProcess = process }
+
+        await withCheckedContinuation { continuation in
+            process.terminationHandler = { _ in continuation.resume() }
         }
 
         streamEnded = true
@@ -1791,8 +1842,8 @@ final class SpeechPlaybackCoordinator {
             return cached
         }
 
-        // Prefer modern option first; fall back to legacy -ac when needed.
-        var detected = ["-ch_layout", "mono"]
+        // Default to legacy -ac which works on all ffmpeg/ffplay versions.
+        var detected = ["-ac", "1"]
 
         let probe = Process()
         probe.executableURL = URL(fileURLWithPath: ffplayPath)
@@ -1803,17 +1854,20 @@ final class SpeechPlaybackCoordinator {
         probe.standardOutput = out
         probe.standardError = err
 
-        if (try? probe.run()) != nil {
+        do {
+            try probe.run()
             probe.waitUntilExit()
             var output = out.fileHandleForReading.readDataToEndOfFile()
             output.append(err.fileHandleForReading.readDataToEndOfFile())
             if let text = String(data: output, encoding: .utf8) {
                 if text.contains("-ch_layout") {
+                    // Modern ffmpeg 5.1+ supports -ch_layout
                     detected = ["-ch_layout", "mono"]
-                } else if text.contains("\n  -ac") || text.contains(" -ac ") {
-                    detected = ["-ac", "1"]
                 }
+                // Otherwise keep -ac 1
             }
+        } catch {
+            print("PiTalk: ffplay probe failed (\(error.localizedDescription)), using legacy -ac flag")
         }
 
         ffplayRawMonoArgsByPath[ffplayPath] = detected
