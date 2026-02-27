@@ -246,29 +246,82 @@ echo -e "${GREEN}=== Release Build Complete ===${NC}"
 echo ""
 ls -lh "$DMG_PATH"
 echo ""
-echo -e "Next steps:"
+
+# 14. Git commit, tag, and push
+echo -e "${YELLOW}📌 Git tagging...${NC}"
 echo ""
-echo -e "  1. Test: ${GREEN}open $DMG_PATH${NC}"
-echo -e "  2. Create GitHub release:"
-echo ""
-echo -e "     git tag -a v${VERSION} -m \"Release v${VERSION}\""
-echo -e "     git push origin v${VERSION}"
-echo ""
-echo -e "     gh release create v${VERSION} \\" 
-echo -e "       dist/PiTalk-${VERSION}.dmg \\" 
-if [ -f "dist/pi-talk-${VERSION}.zip" ]; then
-echo -e "       dist/pi-talk-${VERSION}.zip \\" 
+
+# Check for uncommitted changes to build-app.sh
+if git diff --quiet scripts/build-app.sh 2>/dev/null; then
+    echo "   Version already committed"
+else
+    echo -n "   Commit version bump? [Y/n] "
+    read -r COMMIT_CONFIRM
+    if [[ ! "$COMMIT_CONFIRM" =~ ^[Nn]$ ]]; then
+        git add scripts/build-app.sh
+        git commit -m "Bump version to ${VERSION}"
+        echo -e "   ${GREEN}✓ Committed version bump${NC}"
+    fi
 fi
-if [ -f "dist/PiTalk-models-${VERSION}.zip" ]; then
-echo -e "       dist/PiTalk-models-${VERSION}.zip \\" 
+
+# Check if tag already exists
+if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+    echo -e "   ${YELLOW}Tag v${VERSION} already exists${NC}"
+else
+    echo -n "   Create and push tag v${VERSION}? [Y/n] "
+    read -r TAG_CONFIRM
+    if [[ ! "$TAG_CONFIRM" =~ ^[Nn]$ ]]; then
+        git tag -a "v${VERSION}" -m "Release v${VERSION}"
+        git push origin main
+        git push origin "v${VERSION}"
+        echo -e "   ${GREEN}✓ Created and pushed tag v${VERSION}${NC}"
+    fi
 fi
-echo -e "       --title \"PiTalk v${VERSION}\" \\" 
-echo -e "       --generate-notes"
+
+# 15. Create GitHub release
 echo ""
-echo -e "  3. Push Homebrew tap:"
+if command -v gh &> /dev/null; then
+    # Check if release already exists
+    if gh release view "v${VERSION}" &>/dev/null; then
+        echo -e "   ${YELLOW}GitHub release v${VERSION} already exists${NC}"
+    else
+        echo -n "   Create GitHub release? [Y/n] "
+        read -r GH_CONFIRM
+        if [[ ! "$GH_CONFIRM" =~ ^[Nn]$ ]]; then
+            RELEASE_ASSETS=("dist/PiTalk-${VERSION}.dmg")
+            [ -f "dist/pi-talk-${VERSION}.zip" ] && RELEASE_ASSETS+=("dist/pi-talk-${VERSION}.zip")
+            [ -f "dist/PiTalk-models-${VERSION}.zip" ] && RELEASE_ASSETS+=("dist/PiTalk-models-${VERSION}.zip")
+            
+            gh release create "v${VERSION}" \
+                "${RELEASE_ASSETS[@]}" \
+                --title "PiTalk v${VERSION}" \
+                --generate-notes
+            echo -e "   ${GREEN}✓ Created GitHub release${NC}"
+        fi
+    fi
+else
+    echo -e "   ${YELLOW}gh CLI not installed, skipping GitHub release${NC}"
+    echo -e "   Install with: brew install gh"
+fi
+
+# 16. Push Homebrew tap
 echo ""
-echo -e "     cd ~/work/projects/homebrew-tap"
-echo -e "     git add Casks/pitalk.rb"
-echo -e "     git commit -m \"Update pitalk to ${VERSION}\""
-echo -e "     git push"
+if [ -f "$CASK_FILE" ]; then
+    echo -n "   Push Homebrew tap update? [Y/n] "
+    read -r BREW_CONFIRM
+    if [[ ! "$BREW_CONFIRM" =~ ^[Nn]$ ]]; then
+        (
+            cd ~/work/projects/homebrew-tap
+            git add Casks/pitalk.rb
+            git commit -m "Update pitalk to ${VERSION}" 2>/dev/null || echo "   (no changes to commit)"
+            git push
+        )
+        echo -e "   ${GREEN}✓ Pushed Homebrew tap${NC}"
+    fi
+fi
+
+echo ""
+echo -e "${GREEN}=== Release v${VERSION} Complete ===${NC}"
+echo ""
+echo -e "Test the release: ${GREEN}open $DMG_PATH${NC}"
 echo ""
