@@ -1072,7 +1072,7 @@ final class SpeechPlaybackCoordinator {
     private func configuredSpeechSpeed() -> Double {
         let raw = UserDefaults.standard.object(forKey: "speechSpeed") as? Double ?? 1.0
         let rounded = (raw * 100).rounded() / 100
-        return min(1.5, max(0.7, rounded))
+        return min(2.0, max(0.7, rounded))
     }
 
     private func elevenLabsConfiguredSpeechSpeed() -> Double {
@@ -2222,7 +2222,7 @@ struct SessionsTabView: View {
                     Image(systemName: "hare")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Slider(value: $monitor.speechSpeed, in: 0.7...1.5, step: 0.05)
+                    Slider(value: $monitor.speechSpeed, in: 0.7...2.0, step: 0.05)
                         .frame(width: 80)
                     Text(String(format: "%.1fx", monitor.speechSpeed))
                         .font(.system(.caption, design: .monospaced))
@@ -3108,7 +3108,7 @@ struct SettingsTabView: View {
 
     private func localPreviewTempoFilter() -> String? {
         let raw = UserDefaults.standard.object(forKey: "speechSpeed") as? Double ?? 1.0
-        let speed = min(1.5, max(0.7, (raw * 100).rounded() / 100))
+        let speed = min(2.0, max(0.7, (raw * 100).rounded() / 100))
         guard abs(speed - 1.0) > 0.01 else { return nil }
         return String(format: "atempo=%.2f", speed)
     }
