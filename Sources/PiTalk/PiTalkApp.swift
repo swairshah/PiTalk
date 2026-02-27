@@ -1355,6 +1355,8 @@ final class SpeechPlaybackCoordinator {
         process.executableURL = URL(fileURLWithPath: ffplayPath)
         let inputPipe = Pipe()
         process.standardInput = inputPipe
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
 
         var arguments = [
             "-f", "s16le",
@@ -1856,9 +1858,31 @@ final class SpeechPlaybackCoordinator {
 
         do {
             try probe.run()
+            
+            // Read pipes on background threads BEFORE waitUntilExit to avoid
+            // deadlock when output exceeds the pipe buffer (~16 KB on macOS).
+            // ffplay -h full easily produces 100 KB+.
+            var outputData = Data()
+            var errorData = Data()
+            let group = DispatchGroup()
+            
+            group.enter()
+            DispatchQueue.global().async {
+                outputData = out.fileHandleForReading.readDataToEndOfFile()
+                group.leave()
+            }
+            
+            group.enter()
+            DispatchQueue.global().async {
+                errorData = err.fileHandleForReading.readDataToEndOfFile()
+                group.leave()
+            }
+            
             probe.waitUntilExit()
-            var output = out.fileHandleForReading.readDataToEndOfFile()
-            output.append(err.fileHandleForReading.readDataToEndOfFile())
+            group.wait()
+            
+            var output = outputData
+            output.append(errorData)
             if let text = String(data: output, encoding: .utf8) {
                 if text.contains("-ch_layout") {
                     // Modern ffmpeg 5.1+ supports -ch_layout
