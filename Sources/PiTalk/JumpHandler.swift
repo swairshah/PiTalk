@@ -112,6 +112,16 @@ final class JumpHandler {
         let cwd = getCwd(for: pid)
         NSLog("JumpHandler: %@", "cwd = \(cwd ?? "nil")")
         
+        // Step 0: Try cmux (Ghostty multiplexer) first — most reliable when available
+        if isCmuxAvailable() {
+            NSLog("JumpHandler: cmux socket detected, trying cmux-based jump for PID %d", pid)
+            if let result = jumpViaCmux(pid: pid) {
+                NSLog("JumpHandler: cmux jump succeeded: %@", result.message ?? "")
+                return result
+            }
+            NSLog("JumpHandler: cmux jump did not find PID %d, falling back to legacy methods", pid)
+        }
+        
         // Detect mux (tmux/zellij)
         let muxInfo = detectMux(pid: Int32(pid), byPid: byPid)
         NSLog("JumpHandler: %@", "mux = \(muxInfo?.type ?? "nil"), session = \(muxInfo?.session ?? "nil")")
@@ -269,6 +279,221 @@ final class JumpHandler {
             focusedApp: focusedApp,
             openedShell: false,
             message: focused ? "Focused \(focusedApp ?? "app")" : "Could not focus terminal or app"
+        )
+    }
+    
+    // MARK: - cmux (Ghostty Multiplexer) Support
+    
+    /// Default cmux Unix socket path
+    private static let cmuxSocketPath = "/tmp/cmux.sock"
+    
+    /// Check if cmux is available (socket exists)
+    private func isCmuxAvailable() -> Bool {
+        return FileManager.default.fileExists(atPath: JumpHandler.cmuxSocketPath)
+    }
+    
+    /// A persistent cmux socket connection that supports sending multiple commands.
+    /// cmux checks process ancestry on connect, so external apps must authenticate
+    /// with a password (set in cmux Settings > Socket > Password mode).
+    private class CmuxConnection {
+        private let fd: Int32
+        
+        private init(fd: Int32) {
+            self.fd = fd
+        }
+        
+        deinit {
+            close(fd)
+        }
+        
+        /// Connect to the cmux socket and optionally authenticate
+        static func connect(socketPath: String = JumpHandler.cmuxSocketPath, password: String? = nil) -> CmuxConnection? {
+            let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+            guard fd >= 0 else {
+                NSLog("JumpHandler: cmux socket() failed: %d", errno)
+                return nil
+            }
+            
+            var addr = sockaddr_un()
+            addr.sun_family = sa_family_t(AF_UNIX)
+            withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+                socketPath.withCString { cstr in
+                    _ = strcpy(UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: CChar.self), cstr)
+                }
+            }
+            
+            let connectResult = withUnsafePointer(to: &addr) { ptr in
+                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                    Darwin.connect(fd, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
+                }
+            }
+            
+            guard connectResult == 0 else {
+                NSLog("JumpHandler: cmux connect() failed: %d", errno)
+                close(fd)
+                return nil
+            }
+            
+            let conn = CmuxConnection(fd: fd)
+            
+            // Authenticate if password provided
+            if let password = password, !password.isEmpty {
+                let authResponse = conn.send("auth \(password)")
+                if let resp = authResponse, resp.contains("ERROR") {
+                    NSLog("JumpHandler: cmux auth failed: %@", resp)
+                    return nil
+                }
+            }
+            
+            // Test the connection with a ping
+            let pingResponse = conn.send("ping")
+            if pingResponse == nil || pingResponse?.contains("Access denied") == true || pingResponse?.contains("ERROR") == true {
+                NSLog("JumpHandler: cmux connection rejected: %@", pingResponse ?? "nil")
+                return nil
+            }
+            
+            return conn
+        }
+        
+        /// Send a command and read the response (newline-delimited protocol).
+        /// The cmux socket keeps the connection open for multiple commands.
+        func send(_ command: String) -> String? {
+            let msg = command + "\n"
+            let sent = msg.withCString { cstr -> Int in
+                Darwin.send(fd, cstr, msg.utf8.count, 0)
+            }
+            guard sent > 0 else {
+                NSLog("JumpHandler: cmux send failed for '%@': %d", command, errno)
+                return nil
+            }
+            
+            // Read response until newline (each response is one line)
+            var responseData = Data()
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            
+            while true {
+                let bytesRead = recv(fd, &buffer, buffer.count, 0)
+                if bytesRead <= 0 { break }
+                responseData.append(contentsOf: buffer[0..<bytesRead])
+                // Check if we have a complete response (ends with newline)
+                if buffer[bytesRead - 1] == 0x0A { break }
+            }
+            
+            guard let response = String(data: responseData, encoding: .utf8) else { return nil }
+            let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
+            
+            if trimmed.hasPrefix("ERROR:") {
+                NSLog("JumpHandler: cmux '%@' -> %@", command, trimmed)
+                return nil
+            }
+            
+            return trimmed
+        }
+    }
+    
+    /// Send a single command to the cmux socket (opens a new connection each time).
+    /// For multi-command flows, use CmuxConnection directly.
+    private func cmuxCommand(_ command: String) -> String? {
+        guard let conn = CmuxConnection.connect() else { return nil }
+        return conn.send(command)
+    }
+    
+    /// Jump to a PID using cmux: scan all surfaces across workspaces for the πid pattern.
+    /// Uses a single persistent socket connection for all commands.
+    private func jumpViaCmux(pid: Int) -> JumpResult? {
+        let searchPattern = "πid\(pid) "
+        
+        // Open a persistent connection (authenticates if password is configured)
+        guard let conn = CmuxConnection.connect() else {
+            NSLog("JumpHandler: cmux connection failed (socket may require password — set in cmux Settings)")
+            return nil
+        }
+        
+        // 1. Get current workspace so we can restore if not found
+        guard let currentWs = conn.send("current_workspace") else {
+            NSLog("JumpHandler: cmux current_workspace failed")
+            return nil
+        }
+        
+        // 2. List all workspaces
+        guard let wsOutput = conn.send("list_workspaces") else {
+            NSLog("JumpHandler: cmux list_workspaces failed")
+            return nil
+        }
+        
+        // Parse workspace list: "* 0: <UUID> <title>" or "  1: <UUID> <title>"
+        struct WsInfo {
+            let index: Int
+            let id: String
+        }
+        var workspaces: [WsInfo] = []
+        for line in wsOutput.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "* ", with: "")
+            let parts = trimmed.split(separator: ":", maxSplits: 1)
+            guard parts.count == 2, let idx = Int(parts[0].trimmingCharacters(in: .whitespaces)) else { continue }
+            let rest = parts[1].trimmingCharacters(in: .whitespaces)
+            let uuid = String(rest.split(separator: " ", maxSplits: 1).first ?? "")
+            workspaces.append(WsInfo(index: idx, id: uuid))
+        }
+        
+        NSLog("JumpHandler: cmux found %d workspaces", workspaces.count)
+        
+        struct CmuxTarget {
+            let workspaceIndex: Int
+            let surfaceIndex: Int
+        }
+        
+        var target: CmuxTarget? = nil
+        
+        // 3. For each workspace, select it, list surfaces, read screen content
+        for ws in workspaces {
+            _ = conn.send("select_workspace \(ws.index)")
+            
+            guard let surfOutput = conn.send("list_surfaces") else { continue }
+            
+            // Parse surface list: "  0: <UUID>" or "* 2: <UUID> [selected]"
+            var surfaceIndexes: [Int] = []
+            for line in surfOutput.components(separatedBy: "\n") {
+                let trimmed = line.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "* ", with: "")
+                let parts = trimmed.split(separator: ":", maxSplits: 1)
+                guard parts.count >= 1, let idx = Int(parts[0].trimmingCharacters(in: .whitespaces)) else { continue }
+                surfaceIndexes.append(idx)
+            }
+            
+            for surfIdx in surfaceIndexes {
+                guard let screen = conn.send("read_screen \(surfIdx) --lines 3") else { continue }
+                
+                if screen.contains(searchPattern) {
+                    target = CmuxTarget(workspaceIndex: ws.index, surfaceIndex: surfIdx)
+                    NSLog("JumpHandler: cmux found PID %d in workspace %d surface %d", pid, ws.index, surfIdx)
+                    break
+                }
+            }
+            
+            if target != nil { break }
+        }
+        
+        guard let target = target else {
+            // Restore original workspace
+            _ = conn.send("select_workspace \(currentWs)")
+            return nil
+        }
+        
+        // 4. Select workspace and focus surface
+        _ = conn.send("select_workspace \(target.workspaceIndex)")
+        _ = conn.send("focus_surface \(target.surfaceIndex)")
+        
+        // 5. Bring cmux to the front (not Ghostty — cmux is its own app)
+        _ = activateCmux()
+        
+        NSLog("JumpHandler: cmux jump complete: workspace=%d, surface=%d", target.workspaceIndex, target.surfaceIndex)
+        
+        return JumpResult(
+            ok: true,
+            focused: true,
+            focusedApp: "cmux",
+            openedShell: false,
+            message: "Focused workspace \(target.workspaceIndex) surface \(target.surfaceIndex) via cmux"
         )
     }
     
@@ -961,9 +1186,8 @@ final class JumpHandler {
             return false
         }
         
-        // Activate Ghostty first
-        ghosttyApp.activate(options: [.activateIgnoringOtherApps])
-        Thread.sleep(forTimeInterval: 0.05)
+        // Robustly activate Ghostty (handles Space/Desktop switching)
+        _ = forceActivateGhosttyFrontmost()
         
         let appRef = AXUIElementCreateApplication(ghosttyApp.processIdentifier)
         
@@ -979,56 +1203,51 @@ final class JumpHandler {
         // The trailing space ensures we don't match log output that prints the pattern
         let searchPattern = "πid\(pid) "
         
-        // Get tab group from first window
-        guard let window = windows.first else { return false }
+        // Collect tab radio buttons across ALL windows (not just the first)
+        var allWindowTabs: [(window: AXUIElement, tabs: [AXUIElement])] = []
         
-        var childrenRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(window, kAXChildrenAttribute as CFString, &childrenRef) == .success,
-              let children = childrenRef as? [AXUIElement] else {
-            return false
-        }
-        
-        // Find tab group
-        var tabGroup: AXUIElement?
-        for child in children {
-            var roleRef: CFTypeRef?
-            AXUIElementCopyAttributeValue(child, kAXRoleAttribute as CFString, &roleRef)
-            if (roleRef as? String) == "AXTabGroup" {
-                tabGroup = child
-                break
-            }
-        }
-        
-        guard let tabGroup else {
-            NSLog("JumpHandler: Could not find tab group")
-            return false
-        }
-        
-        // Get all tabs
-        var tabsRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(tabGroup, kAXChildrenAttribute as CFString, &tabsRef) == .success,
-              let tabs = tabsRef as? [AXUIElement] else {
-            return false
-        }
-        
-        let radioButtons = tabs.filter { tab in
-            var roleRef: CFTypeRef?
-            AXUIElementCopyAttributeValue(tab, kAXRoleAttribute as CFString, &roleRef)
-            return (roleRef as? String) == "AXRadioButton"
-        }
-        
-        NSLog("JumpHandler: Found %d tabs to search", radioButtons.count)
-        
-        // Helper to get all text areas from current window and check for PID
-        func searchCurrentWindowForPID() -> AXUIElement? {
-            // Re-query the window to get fresh content after tab switch
-            var freshWindowsRef: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(appRef, kAXWindowsAttribute as CFString, &freshWindowsRef) == .success,
-                  let freshWindows = freshWindowsRef as? [AXUIElement],
-                  let currentWindow = freshWindows.first else {
-                return nil
+        for window in windows {
+            var childrenRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(window, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+                  let children = childrenRef as? [AXUIElement] else {
+                continue
             }
             
+            // Find tab group
+            var tabGroup: AXUIElement?
+            for child in children {
+                var roleRef: CFTypeRef?
+                AXUIElementCopyAttributeValue(child, kAXRoleAttribute as CFString, &roleRef)
+                if (roleRef as? String) == "AXTabGroup" {
+                    tabGroup = child
+                    break
+                }
+            }
+            
+            guard let tabGroup else { continue }
+            
+            var tabsRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(tabGroup, kAXChildrenAttribute as CFString, &tabsRef) == .success,
+                  let tabs = tabsRef as? [AXUIElement] else {
+                continue
+            }
+            
+            let radioButtons = tabs.filter { tab in
+                var roleRef: CFTypeRef?
+                AXUIElementCopyAttributeValue(tab, kAXRoleAttribute as CFString, &roleRef)
+                return (roleRef as? String) == "AXRadioButton"
+            }
+            
+            if !radioButtons.isEmpty {
+                allWindowTabs.append((window: window, tabs: radioButtons))
+            }
+        }
+        
+        let totalTabs = allWindowTabs.reduce(0) { $0 + $1.tabs.count }
+        NSLog("JumpHandler: Found %d tabs across %d windows to search", totalTabs, allWindowTabs.count)
+        
+        // Helper to get all text areas from a specific window and check for PID
+        func searchWindowForPID(_ targetWindow: AXUIElement) -> AXUIElement? {
             // Find all text areas recursively
             var textAreas: [AXUIElement] = []
             func findTextAreas(in element: AXUIElement, depth: Int = 0) {
@@ -1050,7 +1269,7 @@ final class JumpHandler {
             }
             
             var contentRef: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(currentWindow, kAXChildrenAttribute as CFString, &contentRef) == .success,
+            guard AXUIElementCopyAttributeValue(targetWindow, kAXChildrenAttribute as CFString, &contentRef) == .success,
                   let content = contentRef as? [AXUIElement] else {
                 return nil
             }
@@ -1090,28 +1309,38 @@ final class JumpHandler {
             return result == .success
         }
         
-        // Check current tab first
-        if let textArea = searchCurrentWindowForPID() {
-            _ = focusTextArea(textArea)
-            NSLog("JumpHandler: Found PID %d in current tab", pid)
-            return true
-        }
-        
-        // Click through each tab using AX API (avoids global keyboard events)
-        for (i, tab) in radioButtons.enumerated() {
-            // Click the tab
-            let result = AXUIElementPerformAction(tab, kAXPressAction as CFString)
-            if result != .success {
-                NSLog("JumpHandler: Failed to click tab %d: %d", i, result.rawValue)
-                continue
+        // Search across all windows and their tabs
+        for (windowIdx, windowEntry) in allWindowTabs.enumerated() {
+            let window = windowEntry.window
+            let radioButtons = windowEntry.tabs
+            
+            // Raise this window so AX can read its content
+            _ = AXUIElementSetAttributeValue(appRef, kAXMainWindowAttribute as CFString, window)
+            _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+            Thread.sleep(forTimeInterval: 0.05)
+            
+            // Check current tab of this window first
+            if let textArea = searchWindowForPID(window) {
+                _ = focusTextArea(textArea)
+                NSLog("JumpHandler: Found PID %d in window %d current tab", pid, windowIdx)
+                return true
             }
             
-            Thread.sleep(forTimeInterval: 0.1)  // Slightly longer delay for content to update
-            
-            if let textArea = searchCurrentWindowForPID() {
-                _ = focusTextArea(textArea)
-                NSLog("JumpHandler: Found PID %d in tab %d", pid, i)
-                return true
+            // Click through each tab in this window
+            for (i, tab) in radioButtons.enumerated() {
+                let result = AXUIElementPerformAction(tab, kAXPressAction as CFString)
+                if result != .success {
+                    NSLog("JumpHandler: Failed to click tab %d in window %d: %d", i, windowIdx, result.rawValue)
+                    continue
+                }
+                
+                Thread.sleep(forTimeInterval: 0.1)  // Wait for content to update
+                
+                if let textArea = searchWindowForPID(window) {
+                    _ = focusTextArea(textArea)
+                    NSLog("JumpHandler: Found PID %d in window %d tab %d", pid, windowIdx, i)
+                    return true
+                }
             }
         }
         
@@ -1278,6 +1507,17 @@ final class JumpHandler {
         } catch {
             NSLog("JumpHandler: zellij go-to-tab failed: %@", error.localizedDescription)
         }
+    }
+    
+    private func activateCmux() -> Bool {
+        if let cmuxApp = NSWorkspace.shared.runningApplications.first(where: {
+            $0.bundleIdentifier == "com.cmuxterm.app"
+        }) {
+            _ = cmuxApp.activate(options: [.activateIgnoringOtherApps, .activateAllWindows])
+            Thread.sleep(forTimeInterval: 0.12)
+            return NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.cmuxterm.app"
+        }
+        return false
     }
     
     private func isGhosttyFrontmost() -> Bool {
