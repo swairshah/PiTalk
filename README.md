@@ -2,7 +2,7 @@
 
 PiTalk is a macOS menu bar app that acts as a local voice hub.
 
-It’s great with Pi, but it’s not Pi-only any app can send text to PiTalk’s local broker and have it spoken through the same centralized queue + playback system.
+It's great with Pi, but it's not Pi-only any app can send text to PiTalk's local broker and have it spoken through the same centralized queue + playback system.
 
 | PiTalk macOS menu bar app | PiTalk iOS companion app |
 |---|---|
@@ -21,6 +21,15 @@ brew install --cask pitalk
 ```
 
 Then launch PiTalk from Applications (or via Spotlight) and start sending broker requests.
+
+### Pi extensions
+
+To use PiTalk with Pi, install the pi-talk and [`pi-telemetry`](https://github.com/jademind/pi-telemetry) extensions:
+
+```bash
+pi install npm:@swairshah/pi-talk
+pi install npm:@jademind/pi-telemetry
+```
 
 ## What this app does
 
@@ -87,11 +96,11 @@ Protocol docs:
 
 ## Pi-specific pieces in this repo
 
-- **`Extensions/pi-talk`** — extracts `<voice>` tags from Pi responses and sends them to PiTalk
-- **`Sources/PiTalk`** — menu bar app + broker + playback coordinator
-- **`Sources/ptts`** — CLI client for enqueueing/stopping speech
-- **`Sources/PiTalkClient`** — shared client helpers
-- **`apps/pitalk-ios`** — iPhone companion app scaffold (WebSocket client + session UI)
+- **`Extensions/pi-talk`** - extracts `<voice>` tags from Pi responses and sends them to PiTalk
+- **`Sources/PiTalk`** - menu bar app + broker + playback coordinator
+- **`Sources/ptts`** - CLI client for enqueueing/stopping speech
+- **`Sources/PiTalkClient`** - shared client helpers
+- **`apps/pitalk-ios`** - iPhone companion app scaffold (WebSocket client + session UI)
 
 ## Quick start (dev)
 
@@ -113,7 +122,12 @@ open .build/PiTalk.app
 - For cloud mode: ElevenLabs API key (`ELEVEN_API_KEY` / `ELEVENLABS_API_KEY`) or Google TTS API key
 - For local mode: `pocket-tts-cli` runtime plus model files (either bundled in full builds or downloaded on first use from the matching PiTalk GitHub release model asset)
 
+## Related projects
+
+- [`pi-telemetry`](https://github.com/jademind/pi-telemetry) — structured runtime telemetry for Pi. PiTalk reads telemetry heartbeats to show live agent state in the menu bar.
+- [`pi-statusbar`](https://github.com/jademind/pi-statusbar) — a free macOS status bar app for Pi built on top of `pi-telemetry`. The menu bar status UX in PiTalk was directly inspired by this project.
+
 ## Acknowledgements
 
-- Huge thanks to the **pi-statusbar** creator — the menu bar status UX was a big inspiration.
-- In our Pi workflow, we use both the **pi-statusbar extension** and this repo’s **pi-talk extension** together.
+- The menu bar status UX was inspired by [`pi-statusbar`](https://github.com/jademind/pi-statusbar).
+- In our Pi workflow, we use both the [`pi-statusbar` extension](https://github.com/jademind/pi-statusbar) and this repo's **pi-talk extension** together.
