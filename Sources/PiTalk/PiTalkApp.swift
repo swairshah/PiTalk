@@ -47,8 +47,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Menu bar UI is handled by SwiftUI MenuBarExtra
     // TTS can run via cloud providers or optional local on-device runtime
     var settingsWindow: NSWindow?
-    var hotKeyRef: EventHotKeyRef?
-    var eventHandler: EventHandlerRef?
     var speechCoordinator: SpeechPlaybackCoordinator?
     var localBroker: LocalSpeechBroker?
     var micMonitor: MicrophoneActivityMonitor?
@@ -104,7 +102,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         
         // Menu bar is now handled by SwiftUI MenuBarExtra
-        setupGlobalShortcut()
+        setupKeyboardShortcuts()
         updateDockIconVisibility()
 
         speechCoordinator = SpeechPlaybackCoordinator(
@@ -158,35 +156,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         localBroker?.stop()
         LocalTTSRuntime.shared.stopServer()
         speechCoordinator?.stopAll()
-        if let hotKeyRef = hotKeyRef {
-            UnregisterEventHotKey(hotKeyRef)
-        }
-        if let eventHandler = eventHandler {
-            RemoveEventHandler(eventHandler)
-        }
+        KeyboardShortcutManager.shared.unregisterAll()
     }
     
-    // MARK: - Global Shortcut (Cmd+.)
+    // MARK: - Global Keyboard Shortcuts
     
-    func setupGlobalShortcut() {
-        // Use Carbon API for true global hotkey that works everywhere
-        var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        
-        let handler: EventHandlerUPP = { _, event, userData -> OSStatus in
-            guard let userData = userData else { return OSStatus(eventNotHandledErr) }
-            let appDelegate = Unmanaged<AppDelegate>.fromOpaque(userData).takeUnretainedValue()
-            appDelegate.stopCurrentSpeech()
-            return noErr
+    func setupKeyboardShortcuts() {
+        let manager = KeyboardShortcutManager.shared
+
+        // Wire up action handlers
+        manager.setHandler(for: .stopSpeech) { [weak self] in
+            self?.stopCurrentSpeech()
         }
-        
-        let selfPtr = Unmanaged.passUnretained(self).toOpaque()
-        InstallEventHandler(GetApplicationEventTarget(), handler, 1, &eventType, selfPtr, &eventHandler)
-        
-        // Register Cmd+. hotkey
-        // Key code 47 = period (.)
-        let hotKeyID = EventHotKeyID(signature: OSType(0x4C4F5149), id: 1) // "LOQI"
-        let modifiers: UInt32 = UInt32(cmdKey)
-        RegisterEventHotKey(47, modifiers, hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
+
+        // Register all hotkeys with Carbon
+        manager.registerAll()
     }
 
     var healthServer: HealthHTTPServer?
@@ -2823,11 +2807,7 @@ struct SettingsTabView: View {
                 }
                 
                 // SHORTCUTS
-                SettingsSectionHeader(title: "Keyboard Shortcuts")
-                
-                SettingsRow("Stop Speech") {
-                    KeyboardShortcutView(keys: ["⌘", "."])
-                }
+                KeyboardShortcutsSettingsSection()
                 
                 Spacer(minLength: 20)
             }
@@ -3512,7 +3492,8 @@ struct HistoryView: View {
                         .foregroundColor(.secondary)
                 }
                 if entry.status == .interrupted {
-                    Label("Stopped via ⌘.", systemImage: "stop.fill")
+                    let shortcutText = KeyboardShortcutManager.shared.bindings[.stopSpeech]?.displayString ?? "⌘."
+                    Label("Stopped via \(shortcutText)", systemImage: "stop.fill")
                         .font(.caption2)
                         .foregroundColor(.orange)
                 }
