@@ -169,8 +169,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.stopCurrentSpeech()
         }
 
+        manager.setHandler(for: .toggleWindow) {
+            Self.toggleMenuBarWindow()
+        }
+
         // Register all hotkeys with Carbon
         manager.registerAll()
+    }
+
+    /// Programmatically click the menu bar button to toggle the MenuBarExtra window.
+    static func toggleMenuBarWindow() {
+        for window in NSApp.windows {
+            guard window.className.contains("NSStatusBarWindow") else { continue }
+            if let statusItem = window.value(forKey: "statusItem") as? NSStatusItem {
+                statusItem.button?.performClick(nil)
+                NSApp.activate(ignoringOtherApps: true)
+                return
+            }
+        }
+        debugLog("PiTalk: Could not find status bar button to toggle")
     }
 
     var healthServer: HealthHTTPServer?

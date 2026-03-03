@@ -35,18 +35,23 @@ struct ShortcutBinding: Codable, Equatable {
 /// An action that can have a keyboard shortcut assigned.
 enum ShortcutAction: String, CaseIterable, Codable {
     case stopSpeech = "stopSpeech"
+    case toggleWindow = "toggleWindow"
 
     var displayName: String {
         switch self {
         case .stopSpeech: return "Stop Speech"
+        case .toggleWindow: return "Open PiTalk"
         }
     }
 
-    var defaultBinding: ShortcutBinding {
+    var defaultBinding: ShortcutBinding? {
         switch self {
         case .stopSpeech:
             // Cmd+. (key code 47 = period)
             return ShortcutBinding(keyCode: 47, modifiers: UInt32(cmdKey))
+        case .toggleWindow:
+            // No default — user assigns their own
+            return nil
         }
     }
 }
@@ -85,15 +90,17 @@ final class KeyboardShortcutManager: ObservableObject {
             for action in ShortcutAction.allCases {
                 if let binding = saved[action.rawValue] {
                     loaded[action] = binding
-                } else {
-                    loaded[action] = action.defaultBinding
+                } else if let defaultBinding = action.defaultBinding {
+                    loaded[action] = defaultBinding
                 }
             }
             bindings = loaded
         } else {
             // First launch: use defaults
             for action in ShortcutAction.allCases {
-                bindings[action] = action.defaultBinding
+                if let defaultBinding = action.defaultBinding {
+                    bindings[action] = defaultBinding
+                }
             }
         }
     }
@@ -140,7 +147,11 @@ final class KeyboardShortcutManager: ObservableObject {
     /// Reset all actions to their default bindings.
     func resetAllToDefaults() {
         for action in ShortcutAction.allCases {
-            bindings[action] = action.defaultBinding
+            if let defaultBinding = action.defaultBinding {
+                bindings[action] = defaultBinding
+            } else {
+                bindings.removeValue(forKey: action)
+            }
         }
         saveBindings()
         reregisterAllHotKeys()
@@ -157,7 +168,7 @@ final class KeyboardShortcutManager: ObservableObject {
         return nil
     }
 
-    /// Whether the current binding differs from the default.
+    /// Whether the current binding matches the default (or both are nil).
     func isDefault(for action: ShortcutAction) -> Bool {
         bindings[action] == action.defaultBinding
     }
