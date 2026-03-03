@@ -32,7 +32,13 @@ Fields:
 
 ```json
 {"type":"stop"}
+{"type":"stop","sourceApp":"pi"}
+{"type":"stop","sourceApp":"pi","sessionId":"abc"}
 ```
+
+Fields:
+- `sourceApp` (optional) — stop only queues belonging to this app. If omitted, stops all queues globally.
+- `sessionId` (optional) — when combined with `sourceApp`, stops only the specific queue for that session. When omitted, stops all queues for the given `sourceApp`.
 
 ## Response shape
 

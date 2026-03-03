@@ -823,6 +823,78 @@ final class SpeechPlaybackCoordinator {
         }
     }
 
+    /// Selective stop: cancel only jobs matching the given sourceApp (and optionally sessionId).
+    /// If sourceApp is nil, falls back to stopAll().
+    /// If sessionId is also provided, only the specific queue key is cleared.
+    /// If only sourceApp is provided, all queues for that app are cleared.
+    func stopForSource(sourceApp: String?, sessionId: String?) {
+        guard let sourceApp = sourceApp,
+              !sourceApp.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            stopAll()
+            return
+        }
+
+        let normalizedApp = normalizedSourceApp(sourceApp)
+
+        let state = queue.sync { () -> (cancelled: [UUID], interrupted: UUID?, shouldResumeNext: Bool) in
+            var cancelledIds: [UUID] = []
+            var interruptedId: UUID? = nil
+            var shouldResumeNext = false
+
+            // Determine which keys to remove
+            let keysToRemove: [String]
+            if let sessionId = sessionId,
+               !sessionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // Specific queue key
+                let key = queueKey(sourceApp: sourceApp, sessionId: sessionId)
+                keysToRemove = [key]
+            } else {
+                // All queues for this sourceApp
+                let prefix = "\(normalizedApp)::"
+                keysToRemove = queuesByKey.keys.filter { $0.hasPrefix(prefix) }
+            }
+
+            // Collect pending job IDs from targeted queues
+            for key in keysToRemove {
+                if let jobs = queuesByKey[key] {
+                    cancelledIds.append(contentsOf: jobs.map(\.historyEntryId))
+                }
+                queuesByKey.removeValue(forKey: key)
+                queueOrder.removeAll { $0 == key }
+            }
+
+            // If the currently playing job belongs to a targeted queue, stop it
+            if let activeKey = currentQueueKey, keysToRemove.contains(activeKey) {
+                interruptedId = currentJobHistoryId
+                terminateCurrentProcessLocked()
+                currentJobHistoryId = nil
+                currentQueueKey = nil
+                currentRunNonce = nil
+                isPlaying = false
+                shouldResumeNext = true
+            }
+
+            debugLog("PiTalk: stopForSource(sourceApp: \(sourceApp), sessionId: \(sessionId ?? "nil")) - cancelled=\(cancelledIds.count), interrupted=\(interruptedId != nil), keysRemoved=\(keysToRemove)")
+
+            return (cancelled: cancelledIds, interrupted: interruptedId, shouldResumeNext: shouldResumeNext)
+        }
+
+        for id in state.cancelled {
+            RequestHistoryStore.shared.updateStatus(id: id, to: .cancelled)
+        }
+
+        if let interruptedId = state.interrupted {
+            RequestHistoryStore.shared.updateStatus(id: interruptedId, to: .interrupted)
+        }
+
+        // If we interrupted the active job, kick the scheduler to play the next one
+        if state.shouldResumeNext {
+            queue.async {
+                self.startNextIfNeededLocked()
+            }
+        }
+    }
+
     func setMicrophoneActive(_ active: Bool) {
         queue.async {
             self.handleMicrophoneStateChangeLocked(active)
@@ -2120,7 +2192,7 @@ final class LocalSpeechBroker {
             send(response: .success(queued: queued), on: connection)
 
         case "stop":
-            coordinator.stopAll()
+            coordinator.stopForSource(sourceApp: request.sourceApp, sessionId: request.sessionId)
             let state = coordinator.state()
             send(response: .success(pending: state.pending, playing: state.playing, currentQueue: state.currentQueue), on: connection)
 

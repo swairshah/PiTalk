@@ -651,7 +651,7 @@ export default function (pi: ExtensionAPI) {
     description: "Stop current speech",
     handler: async (_args, ctx) => {
       try {
-        await sendBrokerCommand({ type: "stop" });
+        await sendBrokerCommand({ type: "stop", sourceApp: "pi", sessionId: currentSessionId });
         ctx.ui.notify("Speech stopped", "info");
       } catch {
         ctx.ui.notify("Could not reach Loqui broker", "warning");
