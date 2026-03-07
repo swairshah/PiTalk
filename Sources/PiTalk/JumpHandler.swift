@@ -63,6 +63,12 @@ final class JumpHandler {
         let session: String?
     }
     
+    struct GhosttyTerminalInfo {
+        let id: String
+        let name: String
+        let cwd: String
+    }
+    
     // MARK: - Public API
     
     /// Async jump - doesn't block the main thread
@@ -89,6 +95,21 @@ final class JumpHandler {
     
     private func performJump(pid: Int) -> JumpResult {
         NSLog("JumpHandler: performJump starting for PID %d", pid)
+        
+        // Fast path: Try Ghostty scripting API first (v1.3.0+).
+        // This is the most direct route — queries Ghostty for all terminals,
+        // matches by PID screen content, and focuses directly. No process scanning,
+        // no cmux, no accessibility tab-clicking needed.
+        if isAppRunning("Ghostty") {
+            let cwd = getCwd(for: pid)
+            if jumpViaGhosttyScripting(pid: pid, cwd: cwd, hints: []) {
+                return JumpResult(ok: true, focused: true, focusedApp: "Ghostty", openedShell: false,
+                                message: "Focused Ghostty for PID \(pid)")
+            }
+        }
+        
+        // Legacy path: fall back to process scanning + cmux + AX for older Ghostty,
+        // non-Ghostty terminals, tmux/zellij, and other scenarios.
         let processes = scanProcesses()
         NSLog("JumpHandler: found %d processes", processes.count)
         let byPid = Dictionary(uniqueKeysWithValues: processes.map { (Int($0.pid), $0) })
@@ -197,7 +218,7 @@ final class JumpHandler {
             }
         }
         
-        // Step 4: Ghostty PID-based pane focus (for raw splits, no mux)
+        // Step 4 (legacy fallback): Ghostty PID-based pane focus (for raw splits, no mux)
         // This is the most reliable method when pi shows PID in status bar
         if !focused && terminalApp == "Ghostty" && muxInfo == nil {
             NSLog("JumpHandler: %@", "Step 4 - trying PID-based Ghostty pane focus for PID \(pid)")
@@ -208,7 +229,7 @@ final class JumpHandler {
             }
         }
         
-        // Step 5: Ghostty CGWindowList-based tab switching
+        // Step 5 (legacy fallback): Ghostty CGWindowList-based tab switching
         // Fallback for when PID search fails or for mux scenarios
         NSLog("JumpHandler: %@", "Step 5 check: focused=\(focused), terminalApp=\(terminalApp ?? "nil"), muxInfo=\(muxInfo != nil)")
         if !focused && (terminalApp == "Ghostty" || muxInfo != nil) {
@@ -881,7 +902,241 @@ final class JumpHandler {
         return false
     }
     
-    // MARK: - Ghostty CGWindowList-based Tab Switching
+    // MARK: - Ghostty Native Scripting API (v1.3.0+)
+    
+    /// Query all Ghostty terminals via the native AppleScript scripting API.
+    /// Returns nil if the scripting API is not available (older Ghostty versions).
+    /// Uses runAppleScriptRaw to preserve case (Ghostty terminal IDs are case-sensitive UUIDs).
+    private func queryGhosttyTerminals() -> [GhosttyTerminalInfo]? {
+        let script = """
+        tell application id "com.mitchellh.ghostty"
+            set allTerms to terminals
+            if (count of allTerms) is 0 then return ""
+            set output to ""
+            repeat with t in allTerms
+                set output to output & id of t & "|||" & name of t & "|||" & working directory of t & linefeed
+            end repeat
+            return output
+        end tell
+        """
+        
+        guard let result = runAppleScriptRaw(script) else {
+            return nil
+        }
+        
+        var terminals: [GhosttyTerminalInfo] = []
+        for line in result.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let parts = trimmed.components(separatedBy: "|||")
+            guard parts.count >= 3 else { continue }
+            terminals.append(GhosttyTerminalInfo(
+                id: parts[0].trimmingCharacters(in: .whitespaces),
+                name: parts[1].trimmingCharacters(in: .whitespaces),
+                cwd: parts[2].trimmingCharacters(in: .whitespaces)
+            ))
+        }
+        
+        return terminals.isEmpty ? nil : terminals
+    }
+    
+    /// Focus a Ghostty terminal by its ID via the native scripting API.
+    /// The ID must be in its original case (Ghostty uses case-sensitive UUID matching).
+    private func focusGhosttyTerminal(id: String) -> Bool {
+        let escaped = escapeForAppleScript(id)
+        let script = """
+        tell application id "com.mitchellh.ghostty"
+            focus terminal id "\(escaped)"
+            activate
+        end tell
+        return "ok"
+        """
+        
+        let result = runAppleScriptRaw(script)
+        return result != nil
+    }
+    
+    /// Jump to a terminal using Ghostty's native AppleScript scripting API (v1.3.0+).
+    /// Matches by PID pattern in title, working directory, or hint strings.
+    /// Returns true if the terminal was found and focused.
+    /// Falls back gracefully (returns false) on older Ghostty versions without scripting support,
+    /// or when multiple terminals match ambiguously (lets legacy PID-based search handle it).
+    /// Write debug info to /tmp/jump_debug.txt for diagnosing jump issues
+    private func debugLog(_ msg: String) {
+        let entry = "\(Date()): \(msg)\n"
+        NSLog("JumpHandler: %@", msg)
+        if let data = entry.data(using: .utf8) {
+            if FileManager.default.fileExists(atPath: "/tmp/jump_debug.txt") {
+                if let fh = FileHandle(forWritingAtPath: "/tmp/jump_debug.txt") {
+                    fh.seekToEndOfFile()
+                    fh.write(data)
+                    fh.closeFile()
+                }
+            } else {
+                FileManager.default.createFile(atPath: "/tmp/jump_debug.txt", contents: data)
+            }
+        }
+    }
+    
+    private func jumpViaGhosttyScripting(pid: Int, cwd: String?, hints: [String]) -> Bool {
+        debugLog("=== jumpViaGhosttyScripting START for PID \(pid), cwd=\(cwd ?? "nil") ===")
+        
+        guard let terminals = queryGhosttyTerminals() else {
+            debugLog("Ghostty scripting API not available")
+            return false
+        }
+        
+        debugLog("queried \(terminals.count) terminals")
+        for t in terminals {
+            debugLog("  id=\(t.id) name='\(t.name)' cwd='\(t.cwd)'")
+        }
+        
+        // Pass 1: Match by PID pattern in title (most precise — always unique)
+        let pidPattern = "πid\(pid) "
+        if let match = terminals.first(where: { $0.name.localizedCaseInsensitiveContains(pidPattern) }) {
+            NSLog("JumpHandler: matched terminal by PID pattern in title: %@", match.id)
+            return focusGhosttyTerminal(id: match.id)
+        }
+        
+        // Pass 2: Match by working directory (only if unambiguous)
+        if let cwd = cwd {
+            // Exact CWD match
+            let cwdMatches = terminals.filter { $0.cwd.caseInsensitiveCompare(cwd) == .orderedSame }
+            if cwdMatches.count == 1 {
+                NSLog("JumpHandler: matched terminal by unique exact CWD: %@", cwdMatches[0].id)
+                return focusGhosttyTerminal(id: cwdMatches[0].id)
+            } else if cwdMatches.count > 1 {
+                NSLog("JumpHandler: skipping CWD match — %d terminals share CWD '%@'", cwdMatches.count, cwd)
+            }
+            
+            // Directory name match (last path component)
+            let dirName = URL(fileURLWithPath: cwd).lastPathComponent
+            if !dirName.isEmpty {
+                let dirMatches = terminals.filter {
+                    $0.cwd.hasSuffix("/\(dirName)") || $0.cwd.caseInsensitiveCompare(dirName) == .orderedSame
+                }
+                if dirMatches.count == 1 {
+                    NSLog("JumpHandler: matched terminal by unique dir name '%@': %@", dirName, dirMatches[0].id)
+                    return focusGhosttyTerminal(id: dirMatches[0].id)
+                } else if dirMatches.count > 1 {
+                    NSLog("JumpHandler: skipping dir name match — %d terminals match '%@'", dirMatches.count, dirName)
+                }
+            }
+        }
+        
+        // Pass 3: Match by hints in title or working directory (only if unambiguous)
+        for hint in hints where !hint.isEmpty {
+            let matches = terminals.filter {
+                $0.name.localizedCaseInsensitiveContains(hint) || $0.cwd.localizedCaseInsensitiveContains(hint)
+            }
+            if matches.count == 1 {
+                NSLog("JumpHandler: matched terminal by unique hint '%@': %@", hint, matches[0].id)
+                return focusGhosttyTerminal(id: matches[0].id)
+            } else if matches.count > 1 {
+                NSLog("JumpHandler: skipping hint '%@' — %d terminals match", hint, matches.count)
+            }
+        }
+        
+        // Pass 4: Ambiguous match — focus each candidate and check screen content for πid pattern.
+        // Uses scripting API for focus (simpler than AX tab clicking) + AX only for reading content.
+        let candidates: [GhosttyTerminalInfo]
+        if let cwd = cwd {
+            // Narrow to terminals matching CWD
+            let cwdCandidates = terminals.filter { $0.cwd.caseInsensitiveCompare(cwd) == .orderedSame }
+            candidates = cwdCandidates.isEmpty ? terminals : cwdCandidates
+        } else {
+            candidates = terminals
+        }
+        
+        if candidates.count > 1 {
+            debugLog("Pass 4 — checking \(candidates.count) candidates for πid\(pid) via screen content")
+            for (idx, candidate) in candidates.enumerated() {
+                debugLog("Pass 4 candidate \(idx): focusing \(candidate.id) name='\(candidate.name)'")
+                if focusGhosttyTerminal(id: candidate.id) {
+                    Thread.sleep(forTimeInterval: 0.3) // Wait for terminal content to render
+                    let found = ghosttyFocusedWindowContainsPID(pid)
+                    debugLog("Pass 4 candidate \(idx): focus OK, screen contains πid\(pid)? \(found)")
+                    if found {
+                        debugLog("Pass 4 MATCHED: \(candidate.id)")
+                        return true
+                    }
+                } else {
+                    debugLog("Pass 4 candidate \(idx): focus FAILED")
+                }
+            }
+            debugLog("Pass 4 — πid\(pid) not found in any candidate's screen content")
+        } else {
+            debugLog("Pass 4 skipped — candidates.count=\(candidates.count)")
+        }
+        
+        debugLog("no match via scripting API — falling back to legacy")
+        return false
+    }
+    
+    /// Check if Ghostty's currently focused window contains the πid pattern in its screen content.
+    /// Used to disambiguate when multiple terminals share the same CWD/title.
+    private func ghosttyFocusedWindowContainsPID(_ pid: Int) -> Bool {
+        let searchPattern = "πid\(pid) "
+        
+        guard let ghosttyApp = NSWorkspace.shared.runningApplications.first(where: {
+            $0.bundleIdentifier == "com.mitchellh.ghostty"
+        }) else {
+            debugLog("ghosttyFocusedWindowContainsPID: Ghostty not running")
+            return false
+        }
+        
+        let appRef = AXUIElementCreateApplication(ghosttyApp.processIdentifier)
+        
+        // Get the focused window
+        var windowRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appRef, kAXFocusedWindowAttribute as CFString, &windowRef) == .success,
+              let window = windowRef as! AXUIElement? else {
+            return false
+        }
+        
+        // Recursively find all text areas
+        var textAreas: [AXUIElement] = []
+        func findTextAreas(in element: AXUIElement, depth: Int = 0) {
+            guard depth < 10 else { return }
+            var roleRef: CFTypeRef?
+            AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef)
+            if (roleRef as? String) == "AXTextArea" {
+                textAreas.append(element)
+            }
+            var childrenRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+               let children = childrenRef as? [AXUIElement] {
+                for child in children {
+                    findTextAreas(in: child, depth: depth + 1)
+                }
+            }
+        }
+        
+        findTextAreas(in: window)
+        
+        debugLog("ghosttyFocusedWindowContainsPID(\(pid)): found \(textAreas.count) text areas")
+        for (i, textArea) in textAreas.enumerated() {
+            var valueRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(textArea, kAXValueAttribute as CFString, &valueRef) == .success,
+                  let value = valueRef as? String else {
+                debugLog("  textArea[\(i)]: no value")
+                continue
+            }
+            // Check last 200 chars (status bar area)
+            let checkRange = value.count > 200 ? String(value.suffix(200)) : value
+            let escapedCheck = checkRange.replacingOccurrences(of: "\n", with: "\\n")
+            debugLog("  textArea[\(i)]: len=\(value.count), last200='\(escapedCheck)'")
+            debugLog("  textArea[\(i)]: contains '\(searchPattern)'? \(checkRange.contains(searchPattern))")
+            if checkRange.contains(searchPattern) {
+                return true
+            }
+        }
+        
+        debugLog("ghosttyFocusedWindowContainsPID(\(pid)): NOT FOUND")
+        return false
+    }
+    
+    // MARK: - Ghostty CGWindowList-based Tab Switching (Legacy Fallback)
     
     private func getGhosttyTabsViaCGWindowList() -> [GhosttyTab] {
         guard let windowList = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
@@ -1801,5 +2056,47 @@ final class JumpHandler {
         }
         
         return result
+    }
+    
+    /// Like runAppleScript but preserves original case in the output.
+    /// Needed for Ghostty terminal IDs which are case-sensitive UUIDs.
+    /// Uses osascript subprocess to avoid TCC "Not authorized to send Apple events" (-1743)
+    /// that blocks in-process NSAppleScript from talking to apps like Ghostty.
+    private func runAppleScriptRaw(_ script: String, timeout: TimeInterval = 10.0) -> String? {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        
+        let inPipe = Pipe()
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        task.standardInput = inPipe
+        task.standardOutput = outPipe
+        task.standardError = errPipe
+        
+        do {
+            try task.run()
+        } catch {
+            debugLog("runAppleScriptRaw: failed to launch osascript: \(error)")
+            return nil
+        }
+        
+        // Write script to stdin
+        inPipe.fileHandleForWriting.write(script.data(using: .utf8)!)
+        inPipe.fileHandleForWriting.closeFile()
+        
+        // Read output before waiting (avoid deadlock on large output)
+        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+        
+        if task.terminationStatus != 0 {
+            let errStr = String(data: errData, encoding: .utf8) ?? ""
+            debugLog("runAppleScriptRaw: osascript failed (exit \(task.terminationStatus)): \(errStr)")
+            return nil
+        }
+        
+        guard let output = String(data: outData, encoding: .utf8) else { return nil }
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
