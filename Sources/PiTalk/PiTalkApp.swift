@@ -811,6 +811,13 @@ final class SpeechPlaybackCoordinator {
         }
     }
 
+    func clearVoiceAssignments() {
+        queue.sync {
+            autoVoiceByQueueKey.removeAll()
+            autoVoiceCycleIndex = 0
+        }
+    }
+
     func stopAll() {
         debugLog("PiTalk: stopAll() called")
         let state = queue.sync { () -> (pending: [UUID], active: UUID?) in
@@ -2963,6 +2970,9 @@ struct SettingsTabView: View {
         } else if newValue == "local" && !localVoices.contains(voice) {
             voice = "alba"
         }
+
+        // Clear cached voice assignments so sessions get voices from the new provider's pool
+        AppDelegate.shared?.speechCoordinator?.clearVoiceAssignments()
 
         if newValue != "local" {
             LocalTTSRuntime.shared.stopServer()
