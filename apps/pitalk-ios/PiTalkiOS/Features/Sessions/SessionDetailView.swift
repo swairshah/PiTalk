@@ -76,6 +76,7 @@ struct SessionDetailView: View {
     @StateObject private var ptt = PushToTalkController()
     @State private var selectedScreenshotItem: PhotosPickerItem?
     @State private var pendingScreenshotData: Data?
+    @State private var isNearBottom = true
 
     private var session: RemoteSession? {
         store.socket.snapshot.sessions.first(where: { $0.id == sessionId })
@@ -128,57 +129,83 @@ struct SessionDetailView: View {
         timeline.last?.id
     }
 
+    /// Whether the session is actively speaking/working.
+    private var isSpeaking: Bool {
+        guard let activity = session?.activity else { return false }
+        return activity == "speaking" || isWorkActivity(activity)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if let session {
-                header(for: session)
+                sessionHeader(for: session)
                     .padding(.horizontal, 16)
-                    .padding(.top, 12)
-                    .padding(.bottom, 8)
-            } else {
-                Text("Session not found")
-                    .foregroundStyle(.secondary)
-                    .padding()
+                    .padding(.top, 4)
+                    .padding(.bottom, 6)
             }
 
             if timeline.isEmpty {
-                VStack(spacing: 6) {
-                    Image(systemName: "text.bubble")
-                        .font(.title3)
-                        .foregroundStyle(.tertiary)
-                    Text("No speech history yet")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
+                EmptyStateView(
+                    icon: "text.bubble",
+                    title: "No speech history yet"
+                )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 6) {
-                            ForEach(timeline) { item in
-                                switch item {
-                                case .history(let entry):
-                                    historyRow(entry)
-                                case .sent(let msg):
-                                    sentRow(msg)
+                ZStack(alignment: .bottomTrailing) {
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(spacing: 8) {
+                                ForEach(timeline) { item in
+                                    switch item {
+                                    case .history(let entry):
+                                        historyRow(entry)
+                                    case .sent(let msg):
+                                        sentRow(msg)
+                                    }
                                 }
+
+                                // Speaking indicator
+                                if isSpeaking {
+                                    HStack {
+                                        TypingIndicator()
+                                        Spacer()
+                                    }
+                                }
+
+                                Color.clear
+                                    .frame(height: 1)
+                                    .id("historyBottom")
                             }
-                            Color.clear
-                                .frame(height: 1)
-                                .id("historyBottom")
+                            .padding(.horizontal, 16)
+                            .padding(.top, 8)
+                            .padding(.bottom, 4)
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.top, 8)
-                        .padding(.bottom, 4)
-                    }
-                    .mask(scrollFadeMask)
-                    .onAppear {
-                        proxy.scrollTo("historyBottom", anchor: .bottom)
-                    }
-                    .onChange(of: latestItemId) { _, _ in
-                        withAnimation(.easeOut(duration: 0.2)) {
+                        .scrollDismissesKeyboard(.interactively)
+                        .simultaneousGesture(TapGesture().onEnded {
+                            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                        })
+                        .mask(ScrollFadeMask(topHeight: 20, bottomHeight: 20))
+                        .modifier(ScrollNearBottomDetector(isNearBottom: $isNearBottom))
+                        .onAppear {
                             proxy.scrollTo("historyBottom", anchor: .bottom)
                         }
+                        .onChange(of: latestItemId) { _, _ in
+                            if isNearBottom {
+                                withAnimation(.easeOut(duration: 0.2)) {
+                                    proxy.scrollTo("historyBottom", anchor: .bottom)
+                                }
+                            }
+                        }
+                    }
+
+                    // Floating scroll-to-bottom button
+                    if !isNearBottom && !timeline.isEmpty {
+                        ScrollToBottomButton {
+                            isNearBottom = true
+                        }
+                        .padding(.trailing, 16)
+                        .padding(.bottom, 12)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
                 }
             }
@@ -188,8 +215,6 @@ struct SessionDetailView: View {
                 .padding(.bottom, 8)
                 .padding(.top, 4)
         }
-        .navigationTitle("Session")
-        .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             store.selectedSessionId = sessionId
         }
@@ -201,106 +226,104 @@ struct SessionDetailView: View {
         }
     }
 
-    // MARK: - Scroll fade mask
+    // MARK: - Session Header
 
-    /// Subtle gradient mask so content fades at top and bottom edges.
-    /// Uses opacity stops (works in both light and dark mode).
-    private var scrollFadeMask: some View {
-        VStack(spacing: 0) {
-            LinearGradient(stops: [
-                .init(color: .clear, location: 0),
-                .init(color: .white, location: 1),
-            ], startPoint: .top, endPoint: .bottom)
-                .frame(height: 16)
-            Color.white
-            LinearGradient(stops: [
-                .init(color: .white, location: 0),
-                .init(color: .clear, location: 1),
-            ], startPoint: .top, endPoint: .bottom)
-                .frame(height: 16)
-        }
-    }
-
-    // MARK: - Header
-
-    private func header(for session: RemoteSession) -> some View {
+    private func sessionHeader(for session: RemoteSession) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Text(session.sourceApp)
-                    .font(.headline)
-                if let mux = session.mux, !mux.isEmpty {
-                    Text(mux)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(.ultraThinMaterial, in: Capsule())
+                if isSpeaking {
+                    PulsingDot(color: .red)
                 }
+                Text(session.project ?? session.sourceApp)
+                    .font(.headline)
                 Spacer()
-                Text(session.activityLabel)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(activityColor(session.activity))
+                StatusChip(
+                    label: session.activityLabel,
+                    color: activityColor(session.activity)
+                )
             }
-            Text(session.sessionId ?? session.id)
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
+            if let detail = session.statusDetail, !detail.isEmpty {
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(PT.textSecondary)
+                    .lineLimit(1)
+            }
+            HStack(spacing: 8) {
+                if let cwd = session.cwd, !cwd.isEmpty {
+                    Text(cwd)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(PT.textMuted)
+                        .lineLimit(1)
+                }
+                if let voice = session.voice {
+                    StatusChip(label: voice, color: PT.cyan)
+                }
+            }
             if let currentText = session.currentText {
                 Text(currentText)
                     .font(.subheadline)
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(PT.textPrimary)
                     .padding(.top, 2)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .modifier(GlassRectModifier(cornerRadius: 14))
     }
 
     // MARK: - Timeline rows
 
-    /// TTS history entry (response from the system).
+    /// TTS history entry — glass card with status accent bar.
     private func historyRow(_ entry: SessionHistoryGroup) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(entry.displayText)
-                .font(.subheadline)
-            HStack {
-                Text(entry.status.capitalized)
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(statusColor(entry.status))
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(entry.displayText)
+                    .font(.subheadline)
+                    .textSelection(.enabled)
+                HStack(spacing: 6) {
+                    StatusChip(
+                        label: entry.status.capitalized,
+                        color: statusColor(entry.status)
+                    )
 
-                if entry.chunkCount > 1 {
-                    Text("• \(entry.chunkCount) chunks")
+                    if entry.chunkCount > 1 {
+                        Text("• \(entry.chunkCount) chunks")
+                            .font(.caption2)
+                            .foregroundStyle(PT.textSecondary)
+                    }
+
+                    Spacer()
+                    Text(relativeDate(entry.timestampMs))
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PT.textMuted)
                 }
-
-                Spacer()
-                Text(relativeDate(entry.timestampMs))
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Spacer(minLength: 20)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .modifier(GlassRectModifier(cornerRadius: 12))
+        .overlay(alignment: .leading) {
+            StatusAccentBar(color: statusColor(entry.status))
+        }
     }
 
-    /// User-sent message (you → session).
+    /// User-sent message — right-aligned accent-tinted glass bubble.
     private func sentRow(_ msg: SentMessage) -> some View {
         HStack {
             Spacer(minLength: 60)
             VStack(alignment: .trailing, spacing: 4) {
                 Text(msg.text)
                     .font(.subheadline)
+                    .textSelection(.enabled)
                 Text(relativeDate(msg.timestampMs))
                     .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.6))
+                    .foregroundStyle(.secondary.opacity(0.7))
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color.blue.opacity(0.7), in: RoundedRectangle(cornerRadius: 12))
-            .foregroundStyle(.white)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .modifier(GlassRectModifier(cornerRadius: 14, tint: PT.accent.opacity(0.3)))
         }
     }
 
@@ -320,51 +343,97 @@ struct SessionDetailView: View {
 
     private var composeBar: some View {
         VStack(spacing: 8) {
+            // Screenshot preview
             if hasPendingScreenshot {
                 HStack(spacing: 8) {
                     Image(systemName: "photo")
                         .font(.caption)
+                        .foregroundStyle(PT.accent)
                     Text("Screenshot ready")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PT.textSecondary)
                     Spacer()
                     Button {
                         pendingScreenshotData = nil
                         selectedScreenshotItem = nil
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(PT.textSecondary)
                     }
                     .buttonStyle(.plain)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                .modifier(GlassRectModifier(cornerRadius: 12))
             }
 
-            TextField("Message…", text: $store.draftText, axis: .vertical)
-                .font(.subheadline)
-                .lineLimit(2...4)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
-
+            // Input field
             HStack(spacing: 8) {
-                Button {
-                    Task {
-                        await sendComposePayload()
+                TextField("Message…", text: $store.draftText, axis: .vertical)
+                    .font(.subheadline)
+                    .lineLimit(1...4)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled(true)
+                    .padding(.leading, 14)
+                    .padding(.vertical, 10)
+
+                if hasDraft {
+                    Button {
+                        Task { await sendComposePayload() }
+                    } label: {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(PT.accent)
+                            .frame(width: 36, height: 36)
+                            .contentShape(Rectangle())
                     }
-                } label: {
-                    Label("Send", systemImage: "paperplane.fill")
-                        .font(.caption.weight(.semibold))
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
+                    .padding(.trailing, 4)
+                    .transition(.scale.combined(with: .opacity))
+                } else if ptt.isRecording {
+                    AudioWaveformView(isRecording: true)
+                        .frame(width: 48, height: 20)
+
+                    Button {
+                        Task {
+                            if let transcript = await ptt.stopAndTranscribe(),
+                               !transcript.isEmpty {
+                                store.draftText = transcript
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "stop.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(PT.red)
+                            .frame(width: 36, height: 36)
+                    }
+                    .padding(.trailing, 4)
                 }
-                .foregroundStyle(hasOutgoingContent ? .white : .secondary)
-                .background(hasOutgoingContent ? Color.blue : Color.clear, in: Capsule())
-                .overlay(Capsule().strokeBorder(.quaternary, lineWidth: hasOutgoingContent ? 0 : 1))
-                .disabled(!hasOutgoingContent)
-                .buttonStyle(.plain)
+            }
+            .modifier(GlassRectModifier(cornerRadius: 20))
+            .animation(.spring(response: 0.3, dampingFraction: 0.86), value: hasDraft)
+            .animation(.spring(response: 0.3, dampingFraction: 0.86), value: ptt.isRecording)
+
+            // Action buttons row
+            HStack(spacing: 8) {
+                // Send button (when no inline send arrow visible)
+                if !hasDraft {
+                    Button {
+                        Task { await sendComposePayload() }
+                    } label: {
+                        Label("Send", systemImage: "paperplane.fill")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                    }
+                    .foregroundStyle(hasOutgoingContent ? .white : .secondary)
+                    .background(
+                        hasOutgoingContent ? AnyShapeStyle(PT.accent) : AnyShapeStyle(.clear),
+                        in: Capsule()
+                    )
+                    .overlay(Capsule().strokeBorder(.quaternary, lineWidth: hasOutgoingContent ? 0 : 1))
+                    .disabled(!hasOutgoingContent)
+                    .buttonStyle(.plain)
+                }
 
                 PhotosPicker(selection: $selectedScreenshotItem, matching: .images, photoLibrary: .shared()) {
                     Label("Photo", systemImage: "photo")
@@ -372,9 +441,7 @@ struct SessionDetailView: View {
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
                 }
-                .foregroundStyle(.primary)
-                .background(.ultraThinMaterial, in: Capsule())
-                .overlay(Capsule().strokeBorder(.quaternary, lineWidth: 1))
+                .modifier(GlassCapsuleModifier())
                 .buttonStyle(.plain)
 
                 Spacer()
@@ -429,25 +496,6 @@ struct SessionDetailView: View {
 
     // MARK: - Helpers
 
-    private func statusColor(_ status: String) -> Color {
-        switch status {
-        case "played": return .green
-        case "playing": return .blue
-        case "failed": return .red
-        case "cancelled", "interrupted": return .orange
-        default: return .secondary
-        }
-    }
-
-    private func activityColor(_ activity: String) -> Color {
-        switch activity {
-        case "speaking", "running": return .red
-        case "queued": return .orange
-        case "waiting": return .green
-        default: return .secondary
-        }
-    }
-
     private func relativeDate(_ timestampMs: Int64) -> String {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
@@ -475,12 +523,9 @@ private struct PushToTalkButton: View {
         .foregroundStyle(isRecording ? .red : .primary)
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(
-            isRecording ? AnyShapeStyle(Color.red.opacity(0.15)) : AnyShapeStyle(.ultraThinMaterial),
-            in: Capsule()
-        )
+        .modifier(GlassCapsuleModifier(tint: isRecording ? PT.red.opacity(0.2) : nil))
         .overlay(
-            Capsule().strokeBorder(isRecording ? Color.red.opacity(0.4) : Color.clear, lineWidth: 1)
+            Capsule().strokeBorder(isRecording ? PT.red.opacity(0.4) : Color.clear, lineWidth: 1)
         )
         .scaleEffect(pressed ? 1.05 : 1.0)
         .animation(.easeInOut(duration: 0.1), value: pressed)

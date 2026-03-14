@@ -8,14 +8,19 @@ struct RemoteSettingsView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 14) {
-                    profilesSection
-                    appearanceSection
-                    statusSection
+            ZStack {
+                GradientBackground()
+
+                ScrollView {
+                    VStack(spacing: 14) {
+                        profilesSection
+                        appearanceSection
+                        statusSection
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 10)
+                    .padding(.bottom, 16)
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 10)
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
@@ -51,25 +56,21 @@ struct RemoteSettingsView: View {
                 Button {
                     showAddProfile = true
                 } label: {
-                    Image(systemName: "plus.circle.fill")
-                        .font(.title3)
-                        .foregroundStyle(.blue)
+                    Image(systemName: "plus")
+                        .font(.system(.body, weight: .semibold))
+                        .foregroundStyle(PT.accent)
+                        .frame(width: 32, height: 32)
+                        .modifier(GlassCircleModifier())
                 }
                 .buttonStyle(.plain)
             }
 
             if store.profiles.isEmpty {
-                VStack(spacing: 6) {
-                    Image(systemName: "server.rack")
-                        .font(.title3)
-                        .foregroundStyle(.tertiary)
-                    Text("No servers configured")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                    Text("Add a server to get started")
-                        .font(.caption2)
-                        .foregroundStyle(.quaternary)
-                }
+                EmptyStateView(
+                    icon: "server.rack",
+                    title: "No servers configured",
+                    subtitle: "Add a server to get started"
+                )
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 12)
             } else {
@@ -81,8 +82,8 @@ struct RemoteSettingsView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .padding(14)
+        .modifier(GlassRectModifier(cornerRadius: 16))
     }
 
     private func profileRow(_ profile: ServerProfile) -> some View {
@@ -90,9 +91,13 @@ struct RemoteSettingsView: View {
         let isConnected = isActive && store.socket.connectionState == .connected
 
         return HStack(spacing: 10) {
-            Circle()
-                .fill(isConnected ? Color.green : (isActive ? Color.orange : Color.gray.opacity(0.3)))
-                .frame(width: 8, height: 8)
+            if isConnected {
+                PulsingDot(color: .green)
+            } else {
+                Circle()
+                    .fill(isActive ? PT.orange : PT.textMuted.opacity(0.3))
+                    .frame(width: 8, height: 8)
+            }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(profile.displayName)
@@ -100,7 +105,7 @@ struct RemoteSettingsView: View {
                     .lineLimit(1)
                 Text("\(profile.host):\(profile.port)")
                     .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PT.textSecondary)
                     .lineLimit(1)
             }
 
@@ -112,27 +117,28 @@ struct RemoteSettingsView: View {
                     store.activeProfileId = nil
                 } label: {
                     Text("Disconnect")
-                        .font(.caption2.weight(.medium))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(PT.red)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
                 }
-                .buttonStyle(.bordered)
-                .tint(.red)
+                .modifier(GlassCapsuleModifier(tint: PT.red.opacity(0.15)))
             } else {
                 Button {
                     store.connectToProfile(profile)
                 } label: {
                     Text("Connect")
-                        .font(.caption2.weight(.medium))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(PT.accent)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
                 }
-                .buttonStyle(.borderedProminent)
+                .modifier(GlassCapsuleModifier(tint: PT.accent.opacity(0.15)))
             }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .modifier(GlassRectModifier(cornerRadius: 12))
         .contextMenu {
             Button {
                 editingProfile = profile
@@ -167,39 +173,24 @@ struct RemoteSettingsView: View {
             .pickerStyle(.segmented)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .padding(14)
+        .modifier(GlassRectModifier(cornerRadius: 16))
     }
 
     // MARK: - Status
 
     private var statusSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             Text("Connection")
                 .font(.headline)
 
-            HStack {
-                Text("State")
-                Spacer()
-                Text(stateLabel)
-                    .foregroundStyle(stateColor)
-            }
+            statusRow(label: "State", value: stateLabel, valueColor: stateColor)
 
             if let profile = store.activeProfile {
-                HStack {
-                    Text("Server")
-                    Spacer()
-                    Text(profile.displayName)
-                        .foregroundStyle(.secondary)
-                }
+                statusRow(label: "Server", value: profile.displayName)
             }
 
-            HStack {
-                Text("Last event seq")
-                Spacer()
-                Text("\(store.socket.lastSeq)")
-                    .font(.system(.body, design: .monospaced))
-            }
+            statusRow(label: "Last event seq", value: "\(store.socket.lastSeq)", mono: true)
 
             Toggle(isOn: Binding(
                 get: { store.remoteAudioStreamingRequested },
@@ -209,40 +200,66 @@ struct RemoteSettingsView: View {
             )) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Stream voice audio to phone")
+                        .font(.subheadline)
                     Text("Off by default. When off, server sends no audio chunks.")
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PT.textSecondary)
                 }
             }
             .disabled(store.socket.connectionState != .connected)
+            .tint(PT.accent)
 
             if store.remoteAudioStreamingRequested {
-                HStack {
-                    Text("Remote audio stream")
-                    Spacer()
-                    Text(store.socket.audioStreamEnabled ? "Active" : "Paused")
-                        .foregroundStyle(store.socket.audioStreamEnabled ? .green : .secondary)
-                }
+                statusRow(
+                    label: "Remote audio stream",
+                    value: store.socket.audioStreamEnabled ? "Active" : "Paused",
+                    valueColor: store.socket.audioStreamEnabled ? .green : .secondary
+                )
             }
 
             if store.socket.audioPlaybackActive {
                 HStack {
                     Text("Remote audio")
+                        .font(.subheadline)
                     Spacer()
-                    Text("Playing")
-                        .foregroundStyle(.green)
+                    HStack(spacing: 4) {
+                        PulsingDot(color: .green)
+                        Text("Playing")
+                            .font(.subheadline)
+                            .foregroundStyle(PT.green)
+                    }
                 }
             }
 
             if let err = store.socket.lastError, !err.isEmpty {
                 Text(err)
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(PT.red)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .modifier(GlassRectModifier(cornerRadius: 8, tint: PT.red.opacity(0.15)))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .padding(14)
+        .modifier(GlassRectModifier(cornerRadius: 16))
+    }
+
+    private func statusRow(
+        label: String,
+        value: String,
+        valueColor: Color = .secondary,
+        mono: Bool = false
+    ) -> some View {
+        HStack {
+            Text(label)
+                .font(.subheadline)
+            Spacer()
+            Text(value)
+                .font(mono ? .system(.subheadline, design: .monospaced) : .subheadline)
+                .foregroundStyle(valueColor)
+        }
     }
 
     private var stateLabel: String {
@@ -274,55 +291,33 @@ private struct ProfileEditorSheet: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 14) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Server Name")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.secondary)
-                        TextField("e.g. M4 MacBook, Intel Mac", text: $profile.name)
-                            .textInputAutocapitalization(.words)
-                            .font(.subheadline)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 10)
-                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+            ZStack {
+                GradientBackground()
 
-                        Text("Host")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.secondary)
-                        TextField("Tailscale IP or hostname", text: $profile.host)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .keyboardType(.URL)
-                            .font(.subheadline)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 10)
-                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                ScrollView {
+                    VStack(spacing: 14) {
+                        VStack(alignment: .leading, spacing: 12) {
+                            editorField(label: "Server Name", placeholder: "e.g. M4 MacBook, Intel Mac", text: $profile.name, capitalize: true)
+                            editorField(label: "Host", placeholder: "Tailscale IP or hostname", text: $profile.host, keyboard: .URL)
+                            editorField(label: "Port", placeholder: "18082", text: $profile.port, keyboard: .numberPad)
 
-                        Text("Port")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.secondary)
-                        TextField("18082", text: $profile.port)
-                            .keyboardType(.numberPad)
-                            .font(.subheadline)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 10)
-                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
-
-                        Text("Token")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.secondary)
-                        SecureField("Optional for no-auth dev mode", text: $profile.token)
-                            .font(.subheadline)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 10)
-                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Token")
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(PT.textSecondary)
+                                SecureField("Optional for no-auth dev mode", text: $profile.token)
+                                    .font(.subheadline)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 12)
+                                    .modifier(GlassRectModifier(cornerRadius: 12))
+                            }
+                        }
+                        .padding(14)
+                        .modifier(GlassRectModifier(cornerRadius: 16))
                     }
-                    .padding(12)
-                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    .padding(.horizontal, 16)
+                    .padding(.top, 10)
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 10)
             }
             .navigationTitle(isNew ? "Add Server" : "Edit Server")
             .navigationBarTitleDisplayMode(.inline)
@@ -336,8 +331,31 @@ private struct ProfileEditorSheet: View {
                         dismiss()
                     }
                     .disabled(profile.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .fontWeight(.semibold)
                 }
             }
+        }
+    }
+
+    private func editorField(
+        label: String,
+        placeholder: String,
+        text: Binding<String>,
+        capitalize: Bool = false,
+        keyboard: UIKeyboardType = .default
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(PT.textSecondary)
+            TextField(placeholder, text: text)
+                .textInputAutocapitalization(capitalize ? .words : .never)
+                .autocorrectionDisabled(!capitalize)
+                .keyboardType(keyboard)
+                .font(.subheadline)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .modifier(GlassRectModifier(cornerRadius: 12))
         }
     }
 }

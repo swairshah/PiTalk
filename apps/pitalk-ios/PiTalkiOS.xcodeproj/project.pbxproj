@@ -19,6 +19,9 @@
 		F6F03E3963FD493A48D613A1 /* SessionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FC1B898671E21D9C99BC504 /* SessionsView.swift */; };
 		BB000001LA00000000000001 /* LiveActivityManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000002LA00000000000002 /* LiveActivityManager.swift */; };
 		BB000003AT00000000000003 /* PiTalkActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000004AT00000000000004 /* PiTalkActivityAttributes.swift */; };
+		CC000001GM00000000000001 /* GlassModifiers.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000002GM00000000000002 /* GlassModifiers.swift */; };
+		CC000003UC00000000000003 /* UIComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000004UC00000000000004 /* UIComponents.swift */; };
+		CC000005TH00000000000005 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000006TH00000000000006 /* Theme.swift */; };
 		BB000005WL00000000000005 /* PiTalkLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000006WL00000000000006 /* PiTalkLiveActivity.swift */; };
 		BB000007WB00000000000007 /* PiTalkActivityWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000008WB00000000000008 /* PiTalkActivityWidgetBundle.swift */; };
 		BB000009AT00000000000009 /* PiTalkActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000004AT00000000000004 /* PiTalkActivityAttributes.swift */; };
@@ -68,6 +71,9 @@
 		BB000008WB00000000000008 /* PiTalkActivityWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiTalkActivityWidgetBundle.swift; sourceTree = "<group>"; };
 		BB00000BEM0000000000000B /* PiTalkActivityWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = PiTalkActivityWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		BB00000FIP0000000000000F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		CC000002GM00000000000002 /* GlassModifiers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassModifiers.swift; sourceTree = "<group>"; };
+		CC000004UC00000000000004 /* UIComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UIComponents.swift; sourceTree = "<group>"; };
+		CC000006TH00000000000006 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -168,7 +174,10 @@
 		BB000011SH00000000000011 /* Shared */ = {
 			isa = PBXGroup;
 			children = (
+				CC000002GM00000000000002 /* GlassModifiers.swift */,
 				BB000004AT00000000000004 /* PiTalkActivityAttributes.swift */,
+				CC000006TH00000000000006 /* Theme.swift */,
+				CC000004UC00000000000004 /* UIComponents.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -284,6 +293,9 @@
 				5F607F6EA5E29EA82439247C /* SettingsView.swift in Sources */,
 				BB000001LA00000000000001 /* LiveActivityManager.swift in Sources */,
 				BB000003AT00000000000003 /* PiTalkActivityAttributes.swift in Sources */,
+				CC000001GM00000000000001 /* GlassModifiers.swift in Sources */,
+				CC000005TH00000000000005 /* Theme.swift in Sources */,
+				CC000003UC00000000000003 /* UIComponents.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

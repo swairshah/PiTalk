@@ -11,7 +11,9 @@ struct SessionsView: View {
     /// Sessions grouped by project key.
     private var groupedDict: [String: [RemoteSession]] {
         Dictionary(grouping: store.socket.snapshot.sessions) { session in
-            session.sessionId ?? session.cwd ?? session.sourceApp
+            session.project
+                ?? session.cwd.map { URL(fileURLWithPath: $0).lastPathComponent }
+                ?? session.sourceApp
         }
     }
 
@@ -41,33 +43,42 @@ struct SessionsView: View {
 
     var body: some View {
         NavigationStack(path: $navigationPath) {
-            VStack(alignment: .leading, spacing: 10) {
-                statusBar
+            ZStack {
+                GradientBackground()
 
-                if store.socket.snapshot.sessions.isEmpty {
-                    emptyState
+                VStack(alignment: .leading, spacing: 10) {
+                    statusBar
+
+                    if store.socket.snapshot.sessions.isEmpty {
+                        EmptyStateView(
+                            icon: "waveform",
+                            title: "No active sessions",
+                            subtitle: "Start a Pi session and it will appear here"
+                        )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    ScrollView {
-                        LazyVStack(spacing: 10) {
-                            ForEach(sortedGroups, id: \.key) { group in
-                                SessionGroupSection(
-                                    groupKey: group.key,
-                                    sessions: group.sessions,
-                                    onSelect: { session in
-                                        store.selectedSessionId = session.id
-                                    }
-                                )
+                    } else {
+                        ScrollView {
+                            LazyVStack(spacing: 10) {
+                                ForEach(sortedGroups, id: \.key) { group in
+                                    SessionGroupSection(
+                                        groupKey: group.key,
+                                        sessions: group.sessions,
+                                        onSelect: { session in
+                                            store.selectedSessionId = session.id
+                                        }
+                                    )
+                                }
                             }
+                            .padding(.top, 2)
                         }
-                        .padding(.top, 2)
+                        .mask(ScrollFadeMask(topHeight: 8, bottomHeight: 16))
                     }
-                }
 
-                Spacer(minLength: 0)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
             .navigationTitle("PiTalk")
             .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(for: String.self) { sessionId in
@@ -110,12 +121,16 @@ struct SessionsView: View {
         }
     }
 
-    /// Single compact row: connection dot + status text + metrics + stop/reconnect
+    /// Glass-styled status bar with connection info and metrics.
     private var statusBar: some View {
         HStack(spacing: 10) {
-            Circle()
-                .fill(bannerColor)
-                .frame(width: 8, height: 8)
+            if store.socket.connectionState == .connected {
+                PulsingDot(color: .green)
+            } else {
+                Circle()
+                    .fill(bannerColor)
+                    .frame(width: 8, height: 8)
+            }
 
             VStack(alignment: .leading, spacing: 1) {
                 if let profile = store.activeProfile {
@@ -133,12 +148,12 @@ struct SessionsView: View {
 
             let summary = store.socket.snapshot.summary
             HStack(spacing: 8) {
-                metricPill(value: summary.total, label: "S", tint: .secondary)
+                MetricPill(value: summary.total, label: "S", tint: .secondary)
                 if summary.speaking > 0 {
-                    metricPill(value: summary.speaking, label: "▶", tint: .red)
+                    MetricPill(value: summary.speaking, label: "▶", tint: .red)
                 }
                 if summary.queued > 0 {
-                    metricPill(value: summary.queued, label: "◻", tint: .orange)
+                    MetricPill(value: summary.queued, label: "◻", tint: .orange)
                 }
             }
 
@@ -149,10 +164,10 @@ struct SessionsView: View {
                     Image(systemName: "stop.fill")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                        .frame(width: 32, height: 32)
+                        .modifier(GlassCircleModifier())
                 }
                 .buttonStyle(.plain)
-                .padding(6)
-                .background(.ultraThinMaterial, in: Circle())
             } else {
                 Button {
                     store.reconnect()
@@ -160,40 +175,15 @@ struct SessionsView: View {
                     Image(systemName: "arrow.clockwise")
                         .font(.caption2)
                         .foregroundStyle(.blue)
+                        .frame(width: 32, height: 32)
+                        .modifier(GlassCircleModifier())
                 }
                 .buttonStyle(.plain)
-                .padding(6)
-                .background(.ultraThinMaterial, in: Circle())
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
-    }
-
-    private func metricPill(value: Int, label: String, tint: Color) -> some View {
-        HStack(spacing: 3) {
-            Text(label)
-                .font(.caption2)
-                .foregroundStyle(tint)
-            Text("\(value)")
-                .font(.caption.weight(.semibold).monospacedDigit())
-                .foregroundStyle(tint)
-        }
-    }
-
-    private var emptyState: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "waveform")
-                .font(.title2)
-                .foregroundStyle(.secondary)
-            Text("No active sessions")
-                .foregroundStyle(.secondary)
-            Text("Start a Pi session and it will appear here")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-        }
-        .padding(.top, 40)
+        .modifier(GlassRectModifier(cornerRadius: 14))
     }
 
     private var bannerText: String {
@@ -226,8 +216,12 @@ private struct SessionGroupSection: View {
     @State private var isExpanded: Bool = true
 
     private var groupActivity: String {
-        if sessions.contains(where: { $0.activity == "speaking" || $0.activity == "running" }) {
+        if sessions.contains(where: { $0.activity == "speaking" }) {
             return "speaking"
+        }
+        let precedence = ["starting", "thinking", "reading", "editing", "running", "searching", "error"]
+        if let work = precedence.first(where: { status in sessions.contains(where: { $0.activity == status }) }) {
+            return work
         }
         if sessions.contains(where: { $0.activity == "queued" }) {
             return "queued"
@@ -238,24 +232,30 @@ private struct SessionGroupSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
                     isExpanded.toggle()
                 }
             } label: {
                 HStack(spacing: 8) {
-                    Circle()
-                        .fill(activityColor(groupActivity))
-                        .frame(width: 8, height: 8)
+                    if activityColor(groupActivity) == .red {
+                        PulsingDot(color: .red)
+                    } else {
+                        Circle()
+                            .fill(activityColor(groupActivity))
+                            .frame(width: 8, height: 8)
+                    }
+
                     Text(shortGroupKey(groupKey))
                         .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
-                    Text("\(sessions.count)")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(.ultraThinMaterial, in: Capsule())
+
+                    StatusChip(
+                        label: "\(sessions.count)",
+                        color: .secondary
+                    )
+
                     Spacer(minLength: 8)
+
                     Image(systemName: "chevron.right")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
@@ -265,12 +265,12 @@ private struct SessionGroupSection: View {
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .padding(.vertical, 10)
 
             if isExpanded {
                 // Stable sort by pid so sessions don't jump around between polls.
                 let stableSessions = sessions.sorted { ($0.pid ?? 0) < ($1.pid ?? 0) }
-                VStack(spacing: 1) {
+                VStack(spacing: 2) {
                     ForEach(stableSessions) { session in
                         NavigationLink(value: session.id) {
                             CompactSessionRow(session: session)
@@ -282,10 +282,11 @@ private struct SessionGroupSection: View {
                     }
                 }
                 .padding(.horizontal, 6)
-                .padding(.bottom, 6)
+                .padding(.bottom, 8)
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .modifier(GlassRectModifier(cornerRadius: 16))
     }
 
     private func shortGroupKey(_ raw: String) -> String {
@@ -293,15 +294,6 @@ private struct SessionGroupSection: View {
             return raw.components(separatedBy: "/").last ?? raw
         }
         return raw
-    }
-
-    private func activityColor(_ activity: String) -> Color {
-        switch activity {
-        case "speaking", "running": return .red
-        case "queued": return .orange
-        case "waiting": return .green
-        default: return .secondary
-        }
     }
 }
 
@@ -314,33 +306,48 @@ private struct CompactSessionRow: View {
         session.currentText ?? session.lastSpokenText
     }
 
+    /// Primary label: project name, mux, or sourceApp as fallback
+    private var sessionLabel: String {
+        if let project = session.project, !project.isEmpty {
+            return project
+        }
+        if let mux = session.mux, !mux.isEmpty {
+            return mux
+        }
+        return session.sourceApp
+    }
+
     var body: some View {
         HStack(spacing: 8) {
-            Circle()
-                .fill(activityColor(session.activity))
-                .frame(width: 7, height: 7)
+            if session.activity == "speaking" {
+                PulsingDot(color: activityColor(session.activity))
+            } else {
+                Circle()
+                    .fill(activityColor(session.activity))
+                    .frame(width: 7, height: 7)
+            }
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    if let mux = session.mux, !mux.isEmpty {
-                        Text(mux)
-                            .font(.subheadline.weight(.medium))
-                            .lineLimit(1)
-                    } else {
-                        Text(session.sourceApp)
-                            .font(.subheadline.weight(.medium))
-                            .lineLimit(1)
-                    }
+                    Text(sessionLabel)
+                        .font(.subheadline.weight(.medium))
+                        .lineLimit(1)
 
-                    // Show pid only when there's no message to display
-                    if snippet == nil, let pid = session.pid {
+                    if let pid = session.pid {
                         Text("pid \(pid)")
                             .font(.caption2.monospaced())
                             .foregroundStyle(.tertiary)
                     }
                 }
 
-                if let text = snippet {
+                // Show status detail (e.g. "reading App.swift") or speech snippet
+                if let detail = session.statusDetail, !detail.isEmpty,
+                   isWorkActivity(session.activity) {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else if let text = snippet {
                     Text(text)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -351,15 +358,13 @@ private struct CompactSessionRow: View {
             Spacer(minLength: 4)
 
             if session.queuedCount > 0 {
-                Text("\(session.queuedCount)q")
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.orange)
+                StatusChip(label: "\(session.queuedCount)q", color: .orange)
             }
 
-            Text(session.activityLabel)
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(activityColor(session.activity))
-                .lineLimit(1)
+            StatusChip(
+                label: session.activityLabel,
+                color: activityColor(session.activity)
+            )
 
             Image(systemName: "chevron.right")
                 .font(.caption2)
@@ -367,15 +372,6 @@ private struct CompactSessionRow: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
-    }
-
-    private func activityColor(_ activity: String) -> Color {
-        switch activity {
-        case "speaking", "running": return .red
-        case "queued": return .orange
-        case "waiting": return .green
-        default: return .secondary
-        }
+        .modifier(GlassRectModifier(cornerRadius: 12))
     }
 }

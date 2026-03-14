@@ -92,49 +92,28 @@ struct HistoryListView: View {
 
     var body: some View {
         NavigationStack {
-            Group {
-                if history.isEmpty {
-                    VStack(spacing: 8) {
-                        Image(systemName: "clock.arrow.circlepath")
-                            .font(.title2)
-                            .foregroundStyle(.secondary)
-                        Text("No history yet")
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    ScrollView {
-                        LazyVStack(spacing: 10) {
-                            ForEach(history) { entry in
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text(entry.displayText)
-                                        .lineLimit(4)
+            ZStack {
+                GradientBackground()
 
-                                    HStack {
-                                        Text(entry.status.capitalized)
-                                            .font(.caption)
-                                            .foregroundStyle(statusColor(entry.status))
-
-                                        if entry.chunkCount > 1 {
-                                            Text("• \(entry.chunkCount) chunks")
-                                                .font(.caption2)
-                                                .foregroundStyle(.secondary)
-                                        }
-
-                                        Spacer()
-
-                                        Text(timestampString(entry.timestampMs))
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                    }
+                Group {
+                    if history.isEmpty {
+                        EmptyStateView(
+                            icon: "clock.arrow.circlepath",
+                            title: "No history yet"
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        ScrollView {
+                            LazyVStack(spacing: 8) {
+                                ForEach(history) { entry in
+                                    historyCard(entry)
                                 }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(12)
-                                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
                             }
+                            .padding(.horizontal, 16)
+                            .padding(.top, 8)
+                            .padding(.bottom, 8)
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.top, 8)
+                        .mask(ScrollFadeMask(topHeight: 12, bottomHeight: 12))
                     }
                 }
             }
@@ -143,13 +122,37 @@ struct HistoryListView: View {
         }
     }
 
-    private func statusColor(_ status: String) -> Color {
-        switch status {
-        case "played": return .green
-        case "playing": return .blue
-        case "failed": return .red
-        case "cancelled", "interrupted": return .orange
-        default: return .secondary
+    private func historyCard(_ entry: CoalescedHistoryEntry) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(entry.displayText)
+                .font(.subheadline)
+                .lineLimit(4)
+                .textSelection(.enabled)
+
+            HStack(spacing: 6) {
+                StatusChip(
+                    label: entry.status.capitalized,
+                    color: statusColor(entry.status)
+                )
+
+                if entry.chunkCount > 1 {
+                    Text("• \(entry.chunkCount) chunks")
+                        .font(.caption2)
+                        .foregroundStyle(PT.textSecondary)
+                }
+
+                Spacer()
+
+                Text(timestampString(entry.timestampMs))
+                    .font(.caption2)
+                    .foregroundStyle(PT.textSecondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .modifier(GlassRectModifier(cornerRadius: 14))
+        .overlay(alignment: .leading) {
+            StatusAccentBar(color: statusColor(entry.status))
         }
     }
 
