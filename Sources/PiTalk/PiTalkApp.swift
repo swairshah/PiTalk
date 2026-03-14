@@ -5,6 +5,7 @@ import Carbon.HIToolbox
 import Network
 import Darwin
 import CoreAudio
+import AVFoundation
 
 // Notification for mic activity changes
 extension Notification.Name {
@@ -723,6 +724,7 @@ final class SpeechPlaybackCoordinator {
 
     private var isPlaying = false
     private var currentProcess: Process?
+    private var currentAudioPlayer: AVAudioPlayer?
     private var currentJobHistoryId: UUID?
     private var currentQueueKey: String?
     private var currentRunNonce: UUID?
@@ -1068,6 +1070,7 @@ final class SpeechPlaybackCoordinator {
             guard self.currentRunNonce == runNonce else { return }
 
             self.currentProcess = nil
+            self.currentAudioPlayer = nil
             self.currentJobHistoryId = nil
             self.currentQueueKey = nil
             self.currentRunNonce = nil
@@ -1490,14 +1493,8 @@ final class SpeechPlaybackCoordinator {
         emitAudioMirrorEnd(streamId: streamId, status: "completed")
     }
 
-    /// Deepgram TTS - buffered playback via REST API response.
+    /// Deepgram TTS - buffered playback via AVAudioPlayer (no ffplay needed).
     private func synthesizeAndPlayDeepgram(job: SpeechJob, runNonce: UUID) async throws {
-        guard let ffplayPath = findFFPlayPath() else {
-            throw NSError(domain: "PiTalk", code: 404, userInfo: [
-                NSLocalizedDescriptionKey: "ffplay not found. Install with: brew install ffmpeg"
-            ])
-        }
-
         let streamId = emitAudioMirrorStart(job: job, runNonce: runNonce)
         var streamEnded = false
         defer {
@@ -1515,37 +1512,27 @@ final class SpeechPlaybackCoordinator {
             return
         }
 
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("pitalk-deepgram-\(UUID().uuidString).mp3")
-        try audioData.write(to: tempURL)
-
-        defer {
-            try? FileManager.default.removeItem(at: tempURL)
-        }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: ffplayPath)
-        process.arguments = [
-            "-nodisp",
-            "-autoexit",
-            "-loglevel", "quiet",
-            tempURL.path
-        ]
-
-        try process.run()
+        let player = try AVAudioPlayer(data: audioData)
+        player.enableRate = true
+        player.rate = Float(configuredSpeechSpeed())
+        player.prepareToPlay()
 
         queue.sync {
-            self.currentProcess = process
+            self.currentAudioPlayer = player
         }
 
-        await withCheckedContinuation { continuation in
-            process.terminationHandler = { _ in
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let delegate = AudioPlayerDelegate {
                 continuation.resume()
             }
+            // Prevent delegate from being deallocated
+            objc_setAssociatedObject(player, "delegate", delegate, .OBJC_ASSOCIATION_RETAIN)
+            player.delegate = delegate
+            player.play()
         }
 
         streamEnded = true
-        emitAudioMirrorEnd(streamId: streamId, status: "completed")
+        emitAudioMirrorEnd(streamId: streamId, status: shouldContinue(runNonce: runNonce) ? "completed" : "interrupted")
     }
 
     /// Local on-device TTS via pocket-tts Rust runtime stream endpoint.
@@ -2133,8 +2120,16 @@ final class SpeechPlaybackCoordinator {
     }
 
     private func terminateCurrentProcessLocked() {
+        if let player = currentAudioPlayer {
+            debugLog("PiTalk: terminateCurrentProcessLocked - stopping AVAudioPlayer")
+            player.stop()
+            currentAudioPlayer = nil
+        }
+
         guard let process = currentProcess else {
-            debugLog("PiTalk: terminateCurrentProcessLocked - no current process")
+            if currentAudioPlayer == nil {
+                debugLog("PiTalk: terminateCurrentProcessLocked - no current process or player")
+            }
             return
         }
 
@@ -4371,6 +4366,25 @@ struct VoiceButton: View {
             .foregroundColor(isSelected ? .accentColor : .primary)
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - AVAudioPlayer Delegate
+
+/// Simple delegate that calls a completion handler when playback finishes.
+private class AudioPlayerDelegate: NSObject, AVAudioPlayerDelegate {
+    private let onFinish: () -> Void
+
+    init(onFinish: @escaping () -> Void) {
+        self.onFinish = onFinish
+    }
+
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        onFinish()
+    }
+
+    func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        onFinish()
     }
 }
 
