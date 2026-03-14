@@ -169,7 +169,6 @@ private struct SessionsHomeView: View {
                         .resizable()
                         .scaledToFit()
                         .frame(width: 30, height: 30)
-                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                     if let profile = store.activeProfile {
                         Text(profile.displayName)
                             .font(.caption.weight(.medium))
