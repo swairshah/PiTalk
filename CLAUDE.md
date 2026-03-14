@@ -31,7 +31,7 @@ There are no tests or linter configured.
 
 - **PiTalkApp** (`@main`) — SwiftUI app entry point with MenuBarExtra
 - **AppDelegate** — Sets up global Cmd+. hotkey (Carbon), owns the coordinator, broker, mic monitor, health server. Singleton via `AppDelegate.shared`
-- **LocalSpeechBroker** — TCP server on port 18081 (NWListener). Accepts NDJSON commands: `speak`, `health`, `stop`
+- **LocalSpeechBroker** — TCP server on port 18081 (NWListener). Accepts NDJSON commands: `speak`, `health`, `stop`, `status`
 - **SpeechPlaybackCoordinator** — Central playback engine. Per-source queue buckets keyed by `sourceApp::sessionId`. Round-robin scheduling, auto voice assignment from pool. Streams ElevenLabs audio to temp MP3, plays via `ffplay`. Uses serial DispatchQueue for thread safety and UUID nonces for stale job detection
 - **HealthHTTPServer** — HTTP server on port 18080, returns `{"ok":true}` at `/health`
 - **MicrophoneActivityMonitor** — Polls CoreAudio input device state; interrupts speech when mic is active
@@ -40,8 +40,8 @@ There are no tests or linter configured.
 
 ### Supporting Files
 
-- **VoiceMonitor** (`VoiceMonitor.swift`) — `@MainActor ObservableObject`, 1-second polling timer, reads Pi telemetry from `~/.pi/agent/telemetry/instances/*.json`, drives the UI
-- **DaemonClient** (`DaemonClient.swift`) — Unix socket client for `pi-statusd` at `~/.pi/agent/statusd.sock`. Commands: `status`, `jump <pid>`, `send <pid> <text>`
+- **AgentStatusStore** (`AgentStatusStore.swift`) — Singleton, thread-safe store for real-time agent status events received from the pi-talk extension via the broker. Replaces telemetry file polling.
+- **VoiceMonitor** (`VoiceMonitor.swift`) — `@MainActor ObservableObject`, push/event-driven via `AgentStatusStore` + `RequestHistoryStore` publishers (no polling timer), drives the UI
 - **JumpHandler** (`JumpHandler.swift`) — Focuses terminal windows for a PID. Supports Ghostty (CGWindowList + Accessibility API), iTerm2/Terminal (AppleScript), tmux/zellij detection
 - **SendHandler** (`SendHandler.swift`) — Sends text to terminal sessions via tmux `send-keys`, zellij `write-chars`, or Ghostty keystrokes
 - **TTSClient** (`PiTalkClient/TTSClient.swift`) — HTTP client for TTS server (legacy local TTS voice names, not the current ElevenLabs voices)

@@ -63,6 +63,7 @@ fi
 # Update binary in app bundle with debug build
 echo -e "${YELLOW}Updating app bundle with debug build...${NC}"
 cp .build/debug/PiTalk "$APP_BIN"
+codesign --force --sign - "$APP_PATH"
 
 # Check for API key
 if [ -n "${ELEVENLABS_API_KEY:-}" ] || [ -n "${ELEVEN_API_KEY:-}" ]; then

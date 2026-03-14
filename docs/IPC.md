@@ -40,6 +40,27 @@ Fields:
 - `sourceApp` (optional) — stop only queues belonging to this app. If omitted, stops all queues globally.
 - `sessionId` (optional) — when combined with `sourceApp`, stops only the specific queue for that session. When omitted, stops all queues for the given `sourceApp`.
 
+### status
+
+Reports agent activity status (sent by the pi-talk extension).
+
+```json
+{"type":"status","pid":12345,"project":"my-app","cwd":"/Users/me/my-app","status":"editing","detail":"App.swift","contextPercent":42}
+```
+
+Fields:
+- `pid` (required) — process ID of the pi agent
+- `status` (required) — one of: `starting`, `thinking`, `reading`, `editing`, `running`, `searching`, `done`, `error`, `remove`
+- `project` (optional) — project/directory name
+- `cwd` (optional) — working directory path
+- `detail` (optional) — extra context (filename, command, etc.)
+- `contextPercent` (optional) — context window usage percentage
+
+To remove an agent (e.g. on shutdown):
+```json
+{"type":"status","pid":12345,"status":"remove"}
+```
+
 ## Response shape
 
 Responses are JSON lines and can include:
