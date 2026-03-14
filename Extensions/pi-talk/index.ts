@@ -94,12 +94,18 @@ Speak freely and conversationally - the user prefers hearing your responses.
 `;
 
 type BrokerRequest = {
-  type: "health" | "speak" | "stop";
+  type: "health" | "speak" | "stop" | "status";
   text?: string;
   voice?: string;
   sourceApp?: string;
   sessionId?: string;
   pid?: number;
+  // Status event fields
+  status?: string;
+  detail?: string;
+  project?: string;
+  cwd?: string;
+  contextPercent?: number;
 };
 
 type BrokerResponse = {
@@ -124,6 +130,50 @@ export default function (pi: ExtensionAPI) {
   let parserBuffer = "";
   let insideVoice = false;
   let speakBuffer = "";
+
+  // Status tracking
+  let lastStatusSent = "";
+  const projectName = path.basename(process.cwd());
+  let lastCtx: any = null;
+
+  // Send agent status event to the broker (fire-and-forget)
+  function sendStatus(status: string, detail?: string) {
+    lastStatusSent = status;
+    const command: BrokerRequest = {
+      type: "status",
+      pid: process.pid,
+      project: projectName,
+      cwd: process.cwd(),
+      status,
+      detail: detail ? detail.slice(0, 100) : undefined,
+    };
+    // Include context usage if available
+    if (lastCtx) {
+      try {
+        const usage = lastCtx.getContextUsage();
+        if (usage && usage.percent != null) {
+          command.contextPercent = Math.round(usage.percent);
+        }
+      } catch {}
+    }
+    sendBrokerCommand(command).catch(() => {});
+  }
+
+  function sendStatusRemove() {
+    sendBrokerCommand({
+      type: "status",
+      pid: process.pid,
+      status: "remove",
+    }).catch(() => {});
+    lastStatusSent = "";
+  }
+
+  function compactDetail(text?: string, max = 64): string | undefined {
+    if (!text) return undefined;
+    const oneLine = text.replace(/\s+/g, " ").trim();
+    if (!oneLine) return undefined;
+    return oneLine.length > max ? oneLine.slice(0, max - 1) + "…" : oneLine;
+  }
 
   // Inbox watcher state
   let inboxWatcher: fs.FSWatcher | null = null;
@@ -322,7 +372,7 @@ export default function (pi: ExtensionAPI) {
         text,
         voice: currentVoice === "auto" ? undefined : currentVoice,
         sourceApp: "pi",
-        sessionId: currentSessionId,
+        sessionId: projectName,
         pid: process.pid,
       });
 
@@ -521,7 +571,13 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  pi.on("message_update", async (event) => {
+  pi.on("message_update", async (event, ctx) => {
+    lastCtx = ctx;
+    // Send status: agent is thinking/streaming
+    if (lastStatusSent !== "thinking") {
+      sendStatus("thinking");
+    }
+
     if (!ttsEnabled || ttsMuted) return;
 
     const msg = event.message;
@@ -541,8 +597,58 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
+  // Status events: agent lifecycle
+  pi.on("agent_start", async (_event, ctx) => {
+    lastCtx = ctx;
+    sendStatus("starting");
+  });
+
+  pi.on("agent_end", async (_event, ctx) => {
+    lastCtx = ctx;
+    sendStatus("done");
+  });
+
+  // Status events: tool execution
+  pi.on("tool_execution_start", async (event, ctx) => {
+    lastCtx = ctx;
+    const { toolName, args = {} } = event;
+
+    switch (toolName) {
+      case "read":
+        sendStatus("reading", compactDetail(path.basename(args.path ?? "")) ?? "read");
+        break;
+      case "edit":
+      case "write":
+        sendStatus("editing", compactDetail(path.basename(args.path ?? "")) ?? toolName);
+        break;
+      case "bash":
+        sendStatus("running", compactDetail(args.command) ?? "bash");
+        break;
+      case "grep":
+      case "find":
+      case "ls":
+        sendStatus("searching", toolName);
+        break;
+      case "web_search":
+      case "fetch_content":
+      case "read_web_page":
+        sendStatus("running", toolName);
+        break;
+      default:
+        sendStatus("running", toolName);
+    }
+  });
+
+  pi.on("tool_execution_end", async (event, ctx) => {
+    lastCtx = ctx;
+    if (event.isError) {
+      sendStatus("error", event.toolName);
+    }
+  });
+
   // Cleanup on session shutdown
   pi.on("session_shutdown", async () => {
+    sendStatusRemove();
     stopInboxWatcher();
     // Try to remove inbox directory
     try {
@@ -651,7 +757,7 @@ export default function (pi: ExtensionAPI) {
     description: "Stop current speech",
     handler: async (_args, ctx) => {
       try {
-        await sendBrokerCommand({ type: "stop", sourceApp: "pi", sessionId: currentSessionId });
+        await sendBrokerCommand({ type: "stop", sourceApp: "pi", sessionId: projectName });
         ctx.ui.notify("Speech stopped", "info");
       } catch {
         ctx.ui.notify("Could not reach Loqui broker", "warning");
