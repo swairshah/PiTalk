@@ -32,7 +32,7 @@ final class LiveActivityManager {
         // Update or start activities for active sessions.
         for session in sessions {
             let key = session.id
-            let isActive = session.activity == "speaking" || session.activity == "running" || session.activity == "queued"
+            let isActive = session.activity == "speaking" || isWorkActivity(session.activity) || session.activity == "queued"
 
             if isActive {
                 // Cancel any pending idle timer.
@@ -73,8 +73,8 @@ final class LiveActivityManager {
     // MARK: - Private
 
     private func startActivity(for session: RemoteSession, serverName: String) {
-        let projectName = shortName(session.sessionId ?? session.cwd ?? session.sourceApp)
-        let agentName = session.mux ?? session.sourceApp
+        let projectName = shortName(session.project ?? session.cwd.map { URL(fileURLWithPath: $0).lastPathComponent } ?? session.sourceApp)
+        let agentName = session.project ?? session.sourceApp
 
         let attributes = PiTalkActivityAttributes(
             sessionKey: session.id,

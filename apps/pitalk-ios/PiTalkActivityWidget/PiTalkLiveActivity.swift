@@ -2,6 +2,15 @@ import ActivityKit
 import SwiftUI
 import WidgetKit
 
+// MARK: - Muted palette for widget (can't use PT since it's a separate target)
+
+private let mutedGreen  = Color(red: 0.18, green: 0.49, blue: 0.20) // #2E7D32
+private let mutedRed    = Color(red: 0.83, green: 0.18, blue: 0.18) // #D32F2F
+private let mutedAmber  = Color(red: 0.90, green: 0.32, blue: 0.00) // #E65100
+private let mutedCyan   = Color(red: 0.00, green: 0.52, blue: 0.74) // #0184BC
+private let mutedGray   = Color(white: 0.55)                         // muted text
+private let dimGray     = Color(white: 0.40)                         // tertiary
+
 struct PiTalkLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: PiTalkActivityAttributes.self) { context in
@@ -23,13 +32,13 @@ struct PiTalkLiveActivity: Widget {
                     if context.state.queuedCount > 0 {
                         Text("\(context.state.queuedCount) queued")
                             .font(.caption2)
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(mutedAmber)
                     }
                 }
                 DynamicIslandExpandedRegion(.center) {
                     Text(context.attributes.projectName)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(mutedGray)
                         .lineLimit(1)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
@@ -47,7 +56,7 @@ struct PiTalkLiveActivity: Widget {
                 if context.state.isFinished {
                     Image(systemName: "checkmark")
                         .font(.caption2.bold())
-                        .foregroundStyle(.green)
+                        .foregroundStyle(mutedGreen)
                 } else {
                     Text(context.attributes.projectName)
                         .font(.caption2)
@@ -69,7 +78,7 @@ struct PiTalkLiveActivity: Widget {
         let attrs = context.attributes
 
         VStack(alignment: .leading, spacing: 6) {
-            // Header row: agent + project + status
+            // Header row
             HStack(spacing: 8) {
                 activityDot(state.activity)
                     .frame(width: 10, height: 10)
@@ -79,21 +88,19 @@ struct PiTalkLiveActivity: Widget {
                         .font(.subheadline.bold())
                     Text(attrs.projectName)
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(mutedGray)
                         .lineLimit(1)
                 }
 
                 Spacer()
 
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text(state.activityLabel)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(activityColor(state.activity))
+                    statusChip(state.activityLabel, color: activityColor(state.activity))
 
                     if state.queuedCount > 0 {
                         Text("\(state.queuedCount) queued")
                             .font(.caption2)
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(mutedAmber)
                     }
                 }
             }
@@ -102,11 +109,11 @@ struct PiTalkLiveActivity: Widget {
             if state.isFinished {
                 HStack(spacing: 6) {
                     Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
+                        .foregroundStyle(mutedGreen)
                         .font(.callout)
                     Text(state.lastSpokenText ?? "Done")
                         .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(mutedGray)
                         .lineLimit(2)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -115,7 +122,7 @@ struct PiTalkLiveActivity: Widget {
                 HStack(alignment: .top, spacing: 6) {
                     Image(systemName: "text.quote")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(mutedGray)
                     Text(text)
                         .font(.callout)
                         .lineLimit(3)
@@ -126,29 +133,41 @@ struct PiTalkLiveActivity: Widget {
                 HStack(alignment: .top, spacing: 6) {
                     Image(systemName: "text.quote")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(dimGray)
                     Text(text)
                         .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(mutedGray)
                         .lineLimit(2)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 4)
             }
 
-            // Footer: server name
+            // Footer
             HStack {
                 Image(systemName: "server.rack")
                     .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(dimGray)
                 Text(attrs.serverName)
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(dimGray)
                 Spacer()
             }
         }
         .padding(14)
         .activitySystemActionForegroundColor(.primary)
+    }
+
+    // MARK: - Components
+
+    private func statusChip(_ label: String, color: Color) -> some View {
+        Text(label)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(color)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.12))
+            .clipShape(Capsule())
     }
 
     // MARK: - Deep Link
@@ -168,10 +187,14 @@ struct PiTalkLiveActivity: Widget {
 
     private func activityColor(_ activity: String) -> Color {
         switch activity {
-        case "speaking", "running": return .red
-        case "queued": return .orange
-        case "waiting": return .green
-        default: return .gray
+        case "speaking", "error": return mutedRed
+        case "starting": return mutedGreen
+        case "thinking", "running", "queued": return mutedAmber
+        case "reading": return mutedCyan
+        case "editing": return mutedAmber
+        case "searching": return mutedAmber
+        case "waiting": return mutedGreen
+        default: return mutedGray
         }
     }
 }
