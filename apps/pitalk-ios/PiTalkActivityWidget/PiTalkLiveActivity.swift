@@ -2,14 +2,14 @@ import ActivityKit
 import SwiftUI
 import WidgetKit
 
-// MARK: - Muted palette for widget (can't use PT since it's a separate target)
+// MARK: - Warm palette for widget (matches icon: browns, terra cotta, gold)
 
-private let mutedGreen  = Color(red: 0.18, green: 0.49, blue: 0.20) // #2E7D32
-private let mutedRed    = Color(red: 0.83, green: 0.18, blue: 0.18) // #D32F2F
-private let mutedAmber  = Color(red: 0.90, green: 0.32, blue: 0.00) // #E65100
-private let mutedCyan   = Color(red: 0.00, green: 0.52, blue: 0.74) // #0184BC
-private let mutedGray   = Color(white: 0.55)                         // muted text
-private let dimGray     = Color(white: 0.40)                         // tertiary
+private let warmGreen   = Color(red: 0.36, green: 0.49, blue: 0.24) // #5B7D3E olive
+private let warmRed     = Color(red: 0.69, green: 0.23, blue: 0.18) // #B03A2E brick
+private let warmAmber   = Color(red: 0.75, green: 0.48, blue: 0.10) // #C07A1A gold
+private let warmTerra   = Color(red: 0.65, green: 0.29, blue: 0.18) // #A5492E terra cotta
+private let warmGray    = Color(red: 0.66, green: 0.58, blue: 0.52) // #A89585 warm muted
+private let dimWarm     = Color(red: 0.48, green: 0.43, blue: 0.40) // #7A6E65 warm dim
 
 struct PiTalkLiveActivity: Widget {
     var body: some WidgetConfiguration {
@@ -32,13 +32,13 @@ struct PiTalkLiveActivity: Widget {
                     if context.state.queuedCount > 0 {
                         Text("\(context.state.queuedCount) queued")
                             .font(.caption2)
-                            .foregroundStyle(mutedAmber)
+                            .foregroundStyle(warmAmber)
                     }
                 }
                 DynamicIslandExpandedRegion(.center) {
                     Text(context.attributes.projectName)
                         .font(.caption)
-                        .foregroundStyle(mutedGray)
+                        .foregroundStyle(warmGray)
                         .lineLimit(1)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
@@ -56,7 +56,7 @@ struct PiTalkLiveActivity: Widget {
                 if context.state.isFinished {
                     Image(systemName: "checkmark")
                         .font(.caption2.bold())
-                        .foregroundStyle(mutedGreen)
+                        .foregroundStyle(warmGreen)
                 } else {
                     Text(context.attributes.projectName)
                         .font(.caption2)
@@ -88,7 +88,7 @@ struct PiTalkLiveActivity: Widget {
                         .font(.subheadline.bold())
                     Text(attrs.projectName)
                         .font(.caption2)
-                        .foregroundStyle(mutedGray)
+                        .foregroundStyle(warmGray)
                         .lineLimit(1)
                 }
 
@@ -100,7 +100,7 @@ struct PiTalkLiveActivity: Widget {
                     if state.queuedCount > 0 {
                         Text("\(state.queuedCount) queued")
                             .font(.caption2)
-                            .foregroundStyle(mutedAmber)
+                            .foregroundStyle(warmAmber)
                     }
                 }
             }
@@ -109,11 +109,11 @@ struct PiTalkLiveActivity: Widget {
             if state.isFinished {
                 HStack(spacing: 6) {
                     Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(mutedGreen)
+                        .foregroundStyle(warmGreen)
                         .font(.callout)
                     Text(state.lastSpokenText ?? "Done")
                         .font(.callout)
-                        .foregroundStyle(mutedGray)
+                        .foregroundStyle(warmGray)
                         .lineLimit(2)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -122,7 +122,7 @@ struct PiTalkLiveActivity: Widget {
                 HStack(alignment: .top, spacing: 6) {
                     Image(systemName: "text.quote")
                         .font(.caption)
-                        .foregroundStyle(mutedGray)
+                        .foregroundStyle(warmGray)
                     Text(text)
                         .font(.callout)
                         .lineLimit(3)
@@ -133,10 +133,10 @@ struct PiTalkLiveActivity: Widget {
                 HStack(alignment: .top, spacing: 6) {
                     Image(systemName: "text.quote")
                         .font(.caption)
-                        .foregroundStyle(dimGray)
+                        .foregroundStyle(dimWarm)
                     Text(text)
                         .font(.callout)
-                        .foregroundStyle(mutedGray)
+                        .foregroundStyle(warmGray)
                         .lineLimit(2)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -147,10 +147,10 @@ struct PiTalkLiveActivity: Widget {
             HStack {
                 Image(systemName: "server.rack")
                     .font(.system(size: 9))
-                    .foregroundStyle(dimGray)
+                    .foregroundStyle(dimWarm)
                 Text(attrs.serverName)
                     .font(.caption2)
-                    .foregroundStyle(dimGray)
+                    .foregroundStyle(dimWarm)
                 Spacer()
             }
         }
@@ -187,14 +187,14 @@ struct PiTalkLiveActivity: Widget {
 
     private func activityColor(_ activity: String) -> Color {
         switch activity {
-        case "speaking", "error": return mutedRed
-        case "starting": return mutedGreen
-        case "thinking", "running", "queued": return mutedAmber
-        case "reading": return mutedCyan
-        case "editing": return mutedAmber
-        case "searching": return mutedAmber
-        case "waiting": return mutedGreen
-        default: return mutedGray
+        case "speaking", "error": return warmRed
+        case "starting": return warmGreen
+        case "thinking", "running", "queued": return warmAmber
+        case "reading": return warmTerra
+        case "editing": return warmAmber
+        case "searching": return warmAmber
+        case "waiting": return warmGreen
+        default: return warmGray
         }
     }
 }
