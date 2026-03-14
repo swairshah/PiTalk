@@ -54,6 +54,22 @@ Press **Cmd+.** to stop speech at any time (requires Loqui.app running).
 3. The extension sends speech jobs to Loqui's local broker (`127.0.0.1:18081`), including `sourceApp`, `sessionId`, and `pid`
 4. Loqui schedules per-session queues and plays audio centrally (no cloud, no API keys)
 
+## Publishing (maintainers)
+
+From repo root:
+
+```bash
+./scripts/publish-pi-talk.sh --dry-run
+./scripts/publish-pi-talk.sh --bump patch
+```
+
+Or from this directory:
+
+```bash
+npm run pack:preview
+npm run publish:npm
+```
+
 ## Credits
 
 - TTS model: [Pocket TTS](https://github.com/kyutai-labs/moshi) by Kyutai Labs

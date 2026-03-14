@@ -24,6 +24,10 @@
   "bugs": {
     "url": "https://github.com/swairshah/Loqui/issues"
   },
+  "scripts": {
+    "pack:preview": "npm pack --dry-run",
+    "publish:npm": "npm publish --access public"
+  },
   "files": [
     "index.ts",
     "README.md"
