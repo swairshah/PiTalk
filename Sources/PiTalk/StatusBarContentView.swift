@@ -25,28 +25,99 @@ struct StatusBarContentView: View {
     }
     
     private func sessionPrimaryLine(_ session: VoiceSession) -> String {
-        let sessionLabel = session.sessionId.map { shortSessionLabel($0) } ?? nil
+        // Prefer project name, then cwd folder name, then sessionId (if human-readable)
+        let label = session.project
+            ?? session.cwd.map { URL(fileURLWithPath: $0).lastPathComponent }
+            ?? session.sessionId.flatMap { looksLikeId($0) ? nil : $0 }
         
-        if let label = sessionLabel {
-            return "\(session.sourceApp) [\(label)] · \(session.activity.label)"
+        if let label {
+            return "\(label) · \(session.activity.label)"
         }
         return "\(session.sourceApp) · \(session.activity.label)"
     }
     
-    private func shortSessionLabel(_ sessionId: String) -> String {
-        let suffix = sessionId.count > 12 ? "…" : ""
-        return String(sessionId.prefix(12)) + suffix
+    /// Detect UUIDs and hex-heavy strings that aren't useful session labels
+    private func looksLikeId(_ string: String) -> Bool {
+        // Standard UUID
+        if UUID(uuidString: string) != nil { return true }
+        // Hex-heavy with dashes (partial UUIDs, hashes, etc.)
+        let hexDash = string.filter { $0.isHexDigit || $0 == "-" }
+        return hexDash.count > string.count / 2 && string.count > 8
     }
     
     private func trimmedText(_ text: String, maxLength: Int = 60) -> String {
         let collapsed = text
             .replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        
+
         guard collapsed.count > maxLength else { return collapsed }
         return String(collapsed.prefix(maxLength)) + "…"
     }
-    
+
+    private struct RecentSessionItem: Identifiable {
+        let id: String
+        let label: String
+        let preview: String
+        let timestamp: Date
+        let status: RequestPlaybackStatus
+    }
+
+    private func sessionKey(pid: Int?, sourceApp: String?, sessionId: String?) -> String {
+        if let pid { return "pid-\(pid)" }
+        let app = (sourceApp?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+            ? sourceApp!.trimmingCharacters(in: .whitespacesAndNewlines)
+            : "unknown"
+        let sid = (sessionId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+            ? sessionId!.trimmingCharacters(in: .whitespacesAndNewlines)
+            : "__none__"
+        return "\(app)::\(sid)"
+    }
+
+    private func recentInactiveSessions() -> [RecentSessionItem] {
+        let now = Date()
+        let minRecentAge: TimeInterval = 2 * 60   // don't move very-recent activity into "Recent"
+
+        let activeKeys = Set(monitor.sessions.map { session in
+            sessionKey(pid: session.pid, sourceApp: session.sourceApp, sessionId: session.sessionId)
+        })
+        let activePids = Set(monitor.sessions.compactMap(\.pid))
+        let activeLabels = Set(monitor.sessions.map {
+            $0.project
+                ?? $0.cwd.map { URL(fileURLWithPath: $0).lastPathComponent }
+                ?? $0.sessionId.flatMap { looksLikeId($0) ? nil : $0 }
+                ?? $0.sourceApp
+        })
+
+        var seen = Set<String>()
+        var result: [RecentSessionItem] = []
+
+        for entry in monitor.recentHistory.sorted(by: { $0.timestamp > $1.timestamp }) {
+            // Keep active/recently-active sessions in the main list, not in "Recent"
+            if now.timeIntervalSince(entry.timestamp) < minRecentAge { continue }
+            if let pid = entry.pid, activePids.contains(pid) { continue }
+
+            let key = sessionKey(pid: entry.pid, sourceApp: entry.sourceApp, sessionId: entry.sessionId)
+            if activeKeys.contains(key) || seen.contains(key) { continue }
+
+            let sessionLabel = entry.sessionId
+                .flatMap { looksLikeId($0) ? nil : $0 }
+                ?? entry.sourceApp
+                ?? "Unknown"
+            if activeLabels.contains(sessionLabel) { continue }
+
+            seen.insert(key)
+            result.append(RecentSessionItem(
+                id: key,
+                label: sessionLabel,
+                preview: trimmedText(entry.text, maxLength: 40),
+                timestamp: entry.timestamp,
+                status: entry.status
+            ))
+        }
+
+        return result
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             // Header
@@ -142,16 +213,17 @@ struct StatusBarContentView: View {
                 }
             }
             
-            // Recent history section (collapsed, show only 3)
-            if !monitor.recentHistory.isEmpty {
+            // Recent inactive sessions (collapsed, show only 3)
+            let recentSessions = recentInactiveSessions()
+            if !recentSessions.isEmpty {
                 Divider()
-                
+
                 DisclosureGroup {
-                    ForEach(monitor.recentHistory.prefix(3)) { entry in
-                        historyRow(entry)
+                    ForEach(recentSessions.prefix(3)) { session in
+                        recentSessionRow(session)
                     }
                 } label: {
-                    Text("Recent (\(monitor.recentHistory.count))")
+                    Text("Recent sessions (\(recentSessions.count))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -193,7 +265,6 @@ struct StatusBarContentView: View {
         .padding(12)
         .frame(width: 360)
         .onAppear { monitor.start() }
-        .onDisappear { monitor.stop() }
     }
     
     @ViewBuilder
@@ -211,9 +282,14 @@ struct StatusBarContentView: View {
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                 
-                // Last spoken text (if any)
-                if let text = session.currentText ?? session.lastSpokenText {
-                    Text("💬 " + trimmedText(text, maxLength: 45))
+                // Detail line: prefer live status detail while running, then speech text
+                if session.activity.isWorkStatus, let detail = session.statusDetail, !detail.isEmpty {
+                    Text(trimmedText(detail, maxLength: 45))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else if let text = session.currentText ?? session.lastSpokenText {
+                    Text(trimmedText(text, maxLength: 45))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -250,7 +326,7 @@ struct StatusBarContentView: View {
             
             Spacer()
             
-            if let pid = session.pid {
+            if session.pid != nil {
                 VStack(spacing: 4) {
                     Button("Jump") {
                         monitor.jump(to: session)
@@ -296,18 +372,26 @@ struct StatusBarContentView: View {
     }
     
     @ViewBuilder
-    private func historyRow(_ entry: RequestHistoryEntry) -> some View {
-        HStack {
-            statusBadge(for: entry.status)
-            
-            Text(trimmedText(entry.text, maxLength: 40))
-                .font(.caption)
+    private func recentSessionRow(_ item: RecentSessionItem) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            statusBadge(for: item.status)
+
+            Text(item.label)
+                .font(.caption.weight(.semibold))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
-            
+
+            Text("·")
+                .foregroundStyle(.tertiary)
+
+            Text(item.preview)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
             Spacer()
-            
-            Text(Self.relativeDateFormatter.localizedString(for: entry.timestamp, relativeTo: Date()))
+
+            Text(Self.relativeDateFormatter.localizedString(for: item.timestamp, relativeTo: Date()))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -343,15 +427,19 @@ struct StatusBarIcon: View {
     private var statusColor: NSColor {
         // White when server is disabled (to indicate "off" state)
         guard serverEnabled else { return .white }
-        
+
         // White when API key/server is offline
         guard serverOnline else { return .white }
-        
-        // Green when any session is waiting for input, otherwise white
-        if summary.color == "green" {
-            return .systemGreen
+
+        switch summary.color {
+        case "green": return .systemGreen
+        case "orange": return .systemOrange
+        case "red": return .systemRed
+        case "blue": return .systemBlue
+        case "purple": return .systemPurple
+        case "yellow": return .systemYellow
+        default: return .white
         }
-        return .white
     }
     
     private var menuBarImage: NSImage {
