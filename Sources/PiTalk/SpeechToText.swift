@@ -1,7 +1,7 @@
 import Foundation
 import AppKit
 
-/// Transcribes audio to text using ElevenLabs or Google Cloud API
+/// Transcribes audio to text using the active cloud provider (currently ElevenLabs or Google)
 final class SpeechToText {
     
     struct TranscriptionResult {
@@ -22,6 +22,12 @@ final class SpeechToText {
             transcribeWithElevenLabs(audioData: audioData, completion: completion)
         case .google:
             transcribeWithGoogle(audioData: audioData, completion: completion)
+        case .deepgram:
+            completion(TranscriptionResult(
+                success: false,
+                text: nil,
+                error: "Speech-to-text is not available in Deepgram mode yet. Switch provider to ElevenLabs or Google."
+            ))
         case .local:
             completion(TranscriptionResult(
                 success: false,

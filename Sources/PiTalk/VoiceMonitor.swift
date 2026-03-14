@@ -521,6 +521,8 @@ final class VoiceMonitor: ObservableObject {
             serverOnline = ElevenLabsApiKeyManager.resolvedKey() != nil
         case .google:
             serverOnline = GoogleApiKeyManager.resolvedKey() != nil
+        case .deepgram:
+            serverOnline = DeepgramApiKeyManager.resolvedKey() != nil
         case .local:
             serverOnline = LocalTTSRuntime.shared.isRuntimeAvailable() && LocalTTSRuntime.shared.isModelInstalled()
         }

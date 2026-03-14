@@ -37,7 +37,7 @@ pi install npm:@jademind/pi-telemetry
 - Accepts `speak`, `health`, and `stop` commands from any local client
 - Queues and coordinates playback so multiple sources can share one voice pipeline
 - Streams low-latency TTS audio
-- Supports cloud providers (ElevenLabs / Google) and optional on-device local TTS
+- Supports cloud providers (ElevenLabs / Google / Deepgram) and optional on-device local TTS
 - Shows live status in the menu bar
 - Supports instant stop (including global **Cmd+.**)
 - Keeps request history (queued / playing / played / interrupted / failed)
@@ -119,7 +119,7 @@ open .build/PiTalk.app
 
 - macOS 13+
 - `ffplay` for playback (`brew install ffmpeg`)
-- For cloud mode: ElevenLabs API key (`ELEVEN_API_KEY` / `ELEVENLABS_API_KEY`) or Google TTS API key
+- For cloud mode: ElevenLabs API key (`ELEVEN_API_KEY` / `ELEVENLABS_API_KEY`), Google TTS API key (`GOOGLE_TTS_API_KEY`), or Deepgram API key (`DEEPGRAM_API_KEY` / `DEEPGRAM_TTS_API_KEY`)
 - For local mode: `pocket-tts-cli` runtime plus model files (either bundled in full builds or downloaded on first use from the matching PiTalk GitHub release model asset)
 
 ## Related projects

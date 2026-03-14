@@ -73,6 +73,7 @@ func printUsage() {
     VOICES:
         ally, dorothy, lily, alice, dave, joseph
         george, emma, oliver, sophia, charlotte, william, jack, olivia, isla, liam
+        draco, pandora, hyperion, theia, angus
 
     NOTE:
         Requires PiTalk.app to be running.

@@ -19,7 +19,8 @@ public class TTSClient {
     public static let availableVoices = [
         "ally", "dorothy", "lily", "alice", "dave", "joseph",
         "george", "emma", "oliver", "sophia", "charlotte", "william",
-        "jack", "olivia", "isla", "liam"
+        "jack", "olivia", "isla", "liam",
+        "draco", "pandora", "hyperion", "theia", "angus"
     ]
     
     /// Check if server is running
