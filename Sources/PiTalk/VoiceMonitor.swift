@@ -1,51 +1,73 @@
 import Foundation
 import SwiftUI
-
-// Debug logging - only prints when PITALK_DEBUG=1
-fileprivate let debugEnabled = ProcessInfo.processInfo.environment["PITALK_DEBUG"] == "1"
-fileprivate func debugLog(_ message: String) {
-    if debugEnabled {
-        print(message)
-    }
-}
+import Combine
 
 // MARK: - Voice Session Model
 
 enum VoiceActivity: Equatable {
     case speaking
-    case queued  
-    case running   // Pi is actively working
-    case waiting   // Pi is waiting for input
+    case queued
+    case starting
+    case thinking
+    case reading
+    case editing
+    case running
+    case searching
+    case error
+    case waiting
     case idle
-    
+
     var label: String {
         switch self {
         case .speaking: return "Speaking"
         case .queued: return "Queued"
+        case .starting: return "Starting"
+        case .thinking: return "Thinking"
+        case .reading: return "Reading"
+        case .editing: return "Editing"
         case .running: return "Running"
+        case .searching: return "Searching"
+        case .error: return "Error"
         case .waiting: return "Waiting"
         case .idle: return "Idle"
         }
     }
-    
+
     var color: Color {
         switch self {
         case .speaking: return .red
         case .queued: return .orange
-        case .running: return .red
+        case .starting: return .green
+        case .thinking: return .orange
+        case .reading: return .blue
+        case .editing: return .yellow
+        case .running: return .orange
+        case .searching: return Color(red: 0.78, green: 0.33, blue: 0.08)  // burnt orange
+        case .error: return .red
         case .waiting: return .green
         case .idle: return .secondary
+        }
+    }
+
+    var isWorkStatus: Bool {
+        switch self {
+        case .starting, .thinking, .reading, .editing, .running, .searching, .error:
+            return true
+        default:
+            return false
         }
     }
 }
 
 struct VoiceSession: Identifiable, Equatable {
-    let id: String  // sourceApp::sessionId or pid-based
+    let id: String
     let sourceApp: String
     let sessionId: String?
     let pid: Int?
-    
+
     var activity: VoiceActivity
+    var statusDetail: String?   // e.g. "reading App.swift", "running ls"
+    var project: String?        // project/directory name from extension
     var currentText: String?
     var queuedCount: Int
     var voice: String?
@@ -63,27 +85,26 @@ struct VoiceSummary: Equatable {
     let idle: Int
     let color: String
     let label: String
-    
+
     var uiColor: Color {
         switch color {
         case "red": return .red
         case "yellow": return .yellow
         case "green": return .green
+        case "orange": return .orange
+        case "blue": return .blue
+        case "purple": return .purple
         default: return .gray
         }
     }
-    
+
     static let empty = VoiceSummary(
-        total: 0,
-        speaking: 0,
-        queued: 0,
-        idle: 0,
-        color: "gray",
-        label: "No voice activity"
+        total: 0, speaking: 0, queued: 0, idle: 0,
+        color: "gray", label: "No voice activity"
     )
 }
 
-// MARK: - Voice Monitor
+// MARK: - Voice Monitor (push-based)
 
 @MainActor
 final class VoiceMonitor: ObservableObject {
@@ -92,540 +113,409 @@ final class VoiceMonitor: ObservableObject {
     @Published private(set) var serverOnline: Bool = false
     @Published private(set) var lastMessage: String?
     @Published private(set) var recentHistory: [RequestHistoryEntry] = []
-    
-    private var timer: Timer?
-    private var refreshTask: Task<Void, Never>?
+
+    private var cancellables = Set<AnyCancellable>()
+    private var statusObserver: NSObjectProtocol?
+    private var micObserver: NSObjectProtocol?
+    private var isStarted = false
     private let historyStore = RequestHistoryStore.shared
-    private let activeSessionWindow: TimeInterval = 5 * 60  // 5 minutes
-    
+    private let activeSessionWindow: TimeInterval = 5 * 60
+
     var speakingCount: Int { sessions.filter { $0.activity == .speaking }.count }
     var queuedCount: Int { sessions.filter { $0.activity == .queued }.count }
     var totalQueuedItems: Int { recentHistory.filter { $0.status == .queued }.count }
-    
-    // Track mic activity to freeze UI order while recording
+
     var isMicActive: Bool = false
-    
-    // Server on/off toggle - stops/starts the broker server entirely
+
     @Published var serverEnabled: Bool = !UserDefaults.standard.bool(forKey: "serverDisabled")
-    
-    func handleServerToggle(enabled: Bool) {
-        debugLog("PiTalk: handleServerToggle called with enabled=\(enabled)")
-        UserDefaults.standard.set(!enabled, forKey: "serverDisabled")
-        
-        guard let appDelegate = AppDelegate.shared else {
-            print("PiTalk: ERROR - AppDelegate.shared not set!")
-            return
+
+    @Published var speechSpeed: Double = min(2.0, max(0.7, UserDefaults.standard.object(forKey: "speechSpeed") as? Double ?? 1.0)) {
+        didSet {
+            let clamped = min(2.0, max(0.7, speechSpeed))
+            if clamped != speechSpeed { speechSpeed = clamped }
+            else { UserDefaults.standard.set(speechSpeed, forKey: "speechSpeed") }
         }
-        
+    }
+
+    func handleServerToggle(enabled: Bool) {
+        UserDefaults.standard.set(!enabled, forKey: "serverDisabled")
+        guard let appDelegate = AppDelegate.shared else { return }
         if enabled {
-            // Start the broker server (with small delay to allow port to be released)
-            debugLog("PiTalk: Starting broker...")
             appDelegate.speechCoordinator?.isMuted = false
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 appDelegate.startLocalBroker()
             }
         } else {
-            // Stop playback and shut down the broker server
-            debugLog("PiTalk: Stopping broker and playback...")
             appDelegate.speechCoordinator?.stopAll()
             appDelegate.speechCoordinator?.isMuted = true
             appDelegate.stopLocalBroker()
         }
     }
-    
-    // Speech speed slider (0.7 to 2.0, default 1.0).
-    // Provider-specific caps are applied at synthesis/playback time.
-    @Published var speechSpeed: Double = min(2.0, max(0.7, UserDefaults.standard.object(forKey: "speechSpeed") as? Double ?? 1.0)) {
-        didSet {
-            let clamped = min(2.0, max(0.7, speechSpeed))
-            if clamped != speechSpeed {
-                speechSpeed = clamped
-            } else {
-                UserDefaults.standard.set(speechSpeed, forKey: "speechSpeed")
-            }
-        }
-    }
-    
-    private var micObserver: NSObjectProtocol?
-    
+
     init() {
-        // Listen for mic activity changes to freeze UI order while recording
+        // React to mic activity changes
         micObserver = NotificationCenter.default.addObserver(
-            forName: .micActivityChanged,
-            object: nil,
-            queue: .main
+            forName: .micActivityChanged, object: nil, queue: .main
         ) { [weak self] notification in
             if let isActive = notification.userInfo?["isActive"] as? Bool {
-                Task { @MainActor in
-                    self?.isMicActive = isActive
-                }
+                Task { @MainActor in self?.isMicActive = isActive }
             }
         }
-        
-        // Start monitoring immediately so the menubar icon shows correct state on launch
+
+        // Start listening immediately
         start()
     }
-    
+
     deinit {
-        refreshTask?.cancel()
-        if let observer = micObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
+        if let observer = micObserver { NotificationCenter.default.removeObserver(observer) }
+        if let observer = statusObserver { NotificationCenter.default.removeObserver(observer) }
     }
-    
+
     func start() {
-        guard timer == nil else { return }
-        refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.refresh()
+        guard !isStarted else { return }
+        isStarted = true
+
+        // Subscribe to agent status events (from pi extension via broker)
+        if statusObserver == nil {
+            statusObserver = NotificationCenter.default.addObserver(
+                forName: .agentStatusChanged, object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.rebuild() }
             }
         }
+
+        // Subscribe to history changes (speech queue state)
+        historyStore.$entries
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.rebuild() }
+            .store(in: &cancellables)
+
+        // Initial build
+        rebuild()
     }
-    
+
     func stop() {
-        timer?.invalidate()
-        timer = nil
-        refreshTask?.cancel()
-        refreshTask = nil
-    }
-    
-    func refresh() {
-        guard refreshTask == nil else { return }
-
-        let entries = historyStore.entries
-        let isMicActive = self.isMicActive
-        let currentSessions = self.sessions
-        let activeSessionWindow = self.activeSessionWindow
-
-        refreshTask = Task(priority: .utility) { [weak self, entries, isMicActive, currentSessions, activeSessionWindow] in
-            let refreshResult = await Task.detached(priority: .utility) {
-                VoiceMonitor.computeRefreshResult(
-                    entries: entries,
-                    isMicActive: isMicActive,
-                    currentSessions: currentSessions,
-                    activeSessionWindow: activeSessionWindow
-                )
-            }.value
-
-            guard let self else { return }
-            defer { self.refreshTask = nil }
-            if Task.isCancelled { return }
-
-            self.sessions = refreshResult.sessions
-            self.summary = refreshResult.summary
-            self.recentHistory = refreshResult.recentHistory
-            self.checkServerHealth()
+        isStarted = false
+        cancellables.removeAll()
+        if let observer = statusObserver {
+            NotificationCenter.default.removeObserver(observer)
+            statusObserver = nil
         }
     }
 
-    private struct RefreshResult {
-        let sessions: [VoiceSession]
-        let summary: VoiceSummary
-        let recentHistory: [RequestHistoryEntry]
-    }
+    // MARK: - Rebuild (replaces the old polling refresh)
 
-    nonisolated private static func computeRefreshResult(
-        entries: [RequestHistoryEntry],
-        isMicActive: Bool,
-        currentSessions: [VoiceSession],
-        activeSessionWindow: TimeInterval
-    ) -> RefreshResult {
-        let telemetryInstances = readPiTelemetry()
-        let daemonAgents = DaemonClient.status()?.agents ?? []
-        let newSessions = buildSessions(
+    private func rebuild() {
+        let entries = historyStore.entries
+        let agents = AgentStatusStore.shared.allAgents()
+        let isMicActive = self.isMicActive
+        let currentSessions = self.sessions
+
+        let agentInstances = agents.map { agent in
+            AgentInstance(
+                pid: agent.pid,
+                cwd: agent.cwd,
+                activity: Self.mapStatus(agent.status),
+                detail: agent.detail,
+                project: agent.project
+            )
+        }
+
+        let inboxPids = Self.activeInboxPids()
+
+        let newSessions = Self.buildSessions(
             from: entries,
-            telemetry: telemetryInstances,
-            daemonAgents: daemonAgents,
+            agents: agentInstances,
+            inboxPids: inboxPids,
             activeSessionWindow: activeSessionWindow
         )
 
-        let orderedSessions: [VoiceSession]
+        // Freeze UI order while mic is active
         if isMicActive && !currentSessions.isEmpty {
-            // Keep current order but update session data
-            var updatedSessions: [VoiceSession] = []
-            let newSessionsById = Dictionary(uniqueKeysWithValues: newSessions.map { ($0.id, $0) })
-
-            // First, keep existing sessions in their current order (with updated data)
-            for existing in currentSessions {
-                if let updated = newSessionsById[existing.id] {
-                    updatedSessions.append(updated)
-                }
+            let byId = Dictionary(uniqueKeysWithValues: newSessions.map { ($0.id, $0) })
+            var ordered = currentSessions.compactMap { byId[$0.id] }
+            for s in newSessions where !ordered.contains(where: { $0.id == s.id }) {
+                ordered.append(s)
             }
-
-            // Then add any new sessions at the end
-            for new in newSessions {
-                if !updatedSessions.contains(where: { $0.id == new.id }) {
-                    updatedSessions.append(new)
-                }
-            }
-
-            orderedSessions = updatedSessions
+            sessions = ordered
         } else {
-            orderedSessions = newSessions
+            sessions = newSessions
         }
 
-        // Get recent history (last 10 completed items)
-        let recentHistory = Array(entries
-            .filter { !$0.status.isInQueue }
-            .sorted { $0.timestamp > $1.timestamp }
-            .prefix(10))
-
-        return RefreshResult(
-            sessions: orderedSessions,
-            summary: buildSummary(from: orderedSessions),
-            recentHistory: recentHistory
-        )
+        summary = Self.buildSummary(from: sessions)
+        recentHistory = Array(entries.filter { !$0.status.isInQueue }
+            .sorted { $0.timestamp > $1.timestamp }.prefix(10))
+        checkServerHealth()
     }
-    
-    // MARK: - Telemetry Reading
-    
-    struct PiTelemetryInstance {
+
+    // MARK: - Agent Instance
+
+    private struct AgentInstance {
         let pid: Int
         let cwd: String?
         let activity: VoiceActivity
-        let sessionId: String?
-        let modelName: String?
-        let contextPercent: Double?
+        let detail: String?
+        let project: String?
     }
-    
-    nonisolated private static func readPiTelemetry() -> [PiTelemetryInstance] {
-        let telemetryDir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".pi/agent/telemetry/instances")
-        
-        guard FileManager.default.fileExists(atPath: telemetryDir.path) else {
-            return []
+
+    private static func mapStatus(_ status: String) -> VoiceActivity {
+        switch status {
+        case "starting": return .starting
+        case "thinking": return .thinking
+        case "reading": return .reading
+        case "editing": return .editing
+        case "running": return .running
+        case "searching": return .searching
+        case "error": return .error
+        case "done": return .waiting
+        default: return .idle
         }
-        
-        let staleMs: Int64 = 10000  // 10 seconds
-        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
-        
-        var instances: [PiTelemetryInstance] = []
-        
-        do {
-            let files = try FileManager.default.contentsOfDirectory(at: telemetryDir, includingPropertiesForKeys: nil)
-            
-            for file in files where file.pathExtension == "json" {
-                guard let data = try? Data(contentsOf: file),
-                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                    continue
-                }
-                
-                // Get process info
-                guard let process = json["process"] as? [String: Any],
-                      let pid = process["pid"] as? Int,
-                      let updatedAt = process["updatedAt"] as? Int64 else {
-                    continue
-                }
-                
-                // Check if process is still alive
-                if kill(Int32(pid), 0) != 0 {
-                    continue
-                }
-                
-                // Check if telemetry is stale
-                if nowMs - updatedAt > staleMs {
-                    continue
-                }
-                
-                // Get workspace/cwd
-                let workspace = json["workspace"] as? [String: Any]
-                let cwd = workspace?["cwd"] as? String
-                
-                // Get session info
-                let session = json["session"] as? [String: Any]
-                let sessionId = session?["id"] as? String
-                
-                // Get model info
-                let model = json["model"] as? [String: Any]
-                let modelName = model?["name"] as? String
-                
-                // Get state/activity
-                let state = json["state"] as? [String: Any]
-                let activity = mapTelemetryActivity(state)
-                
-                // Get context info
-                let context = json["context"] as? [String: Any]
-                let contextPercent = context?["percent"] as? Double
-                
-                instances.append(PiTelemetryInstance(
-                    pid: pid,
-                    cwd: cwd,
-                    activity: activity,
-                    sessionId: sessionId,
-                    modelName: modelName,
-                    contextPercent: contextPercent
-                ))
-            }
-        } catch {
-            debugLog("PiTalk: Error reading telemetry: \(error)")
-        }
-        
-        return instances
     }
-    
-    nonisolated private static func mapTelemetryActivity(_ state: [String: Any]?) -> VoiceActivity {
-        guard let state = state else { return .idle }
-        
-        // Check activity field first
-        if let activity = state["activity"] as? String {
-            switch activity {
-            case "working":
-                return .running
-            case "waiting_input":
-                return .waiting
-            default:
-                break
-            }
-        }
-        
-        // Fallback to boolean fields
-        if state["waitingForInput"] as? Bool == true {
-            return .waiting
-        }
-        if state["busy"] as? Bool == true || state["isIdle"] as? Bool == false {
-            return .running
-        }
-        if state["isIdle"] as? Bool == true {
-            return .idle
-        }
-        
-        return .idle
-    }
-    
+
+    // MARK: - Actions
+
     func stopAll() {
-        // Get app delegate and call stopCurrentSpeech
-        if let appDelegate = AppDelegate.shared {
-            appDelegate.stopCurrentSpeech()
-        }
-        // Also clear any stale queued/playing entries in history
+        AppDelegate.shared?.stopCurrentSpeech()
         RequestHistoryStore.shared.cancelAllPending()
         lastMessage = "Stopped all speech"
     }
-    
+
     func jump(to session: VoiceSession) {
         guard let pid = session.pid else {
             lastMessage = "No PID available for jump"
-            debugLog("PiTalk: Jump failed - no PID")
             return
         }
-        
-        debugLog("PiTalk: Jump requested for PID \(pid)")
         lastMessage = "Jumping to PID \(pid)..."
-        
-        // Use native Swift JumpHandler (no daemon needed)
         JumpHandler.jumpAsync(to: pid) { [weak self] result in
-            debugLog("PiTalk: JumpHandler result: focused=\(result.focused), app=\(result.focusedApp ?? "nil"), msg=\(result.message ?? "nil")")
-            if result.focused {
-                self?.lastMessage = "Focused \(result.focusedApp ?? "terminal") for PID \(pid)"
-            } else {
-                self?.lastMessage = result.message ?? "Could not focus terminal"
-            }
+            self?.lastMessage = result.focused
+                ? "Focused \(result.focusedApp ?? "terminal") for PID \(pid)"
+                : (result.message ?? "Could not focus terminal")
         }
     }
 
     func sendText(to session: VoiceSession, text: String) {
-        print("PiTalk: sendText - pid=\(session.pid ?? -1), tty=\(session.tty ?? "nil"), mux=\(session.mux ?? "nil")")
+        guard let pid = session.pid else {
+            lastMessage = "No PID available"
+            return
+        }
         lastMessage = "Sending..."
-        
-        SendHandler.send(pid: session.pid, tty: session.tty, mux: session.mux, text: text) { [weak self] result in
-            print("PiTalk: SendHandler result: \(result.success), \(result.message ?? "")")
+        SendHandler.send(pid: pid, tty: nil, mux: nil, text: text) { [weak self] result in
             self?.lastMessage = result.message ?? (result.success ? "Sent" : "Failed")
         }
     }
-    
-    nonisolated private static func buildSessions(
+
+    // MARK: - Build Sessions
+
+    private static func buildSessions(
         from entries: [RequestHistoryEntry],
-        telemetry: [PiTelemetryInstance],
-        daemonAgents: [DaemonClient.AgentState],
+        agents: [AgentInstance],
+        inboxPids: [Int],
         activeSessionWindow: TimeInterval
     ) -> [VoiceSession] {
         var sessions: [VoiceSession] = []
         var seenPids = Set<Int>()
-        
-        let agentsByPid: [Int32: DaemonClient.AgentState] = Dictionary(uniqueKeysWithValues: daemonAgents.map { ($0.pid, $0) })
-        
-        // First, create sessions from pi telemetry (accurate status)
-        for instance in telemetry {
-            seenPids.insert(instance.pid)
-            
-            let cwdName = instance.cwd.map { URL(fileURLWithPath: $0).lastPathComponent }
-            let agent = agentsByPid[Int32(instance.pid)]
-            
+
+        // Sessions from live agent status events
+        for agent in agents {
+            seenPids.insert(agent.pid)
+            let cwdName = agent.cwd.map { URL(fileURLWithPath: $0).lastPathComponent }
+
             var session = VoiceSession(
-                id: "pid-\(instance.pid)",
+                id: "pid-\(agent.pid)",
                 sourceApp: "pi",
                 sessionId: cwdName,
-                pid: instance.pid,
-                activity: instance.activity,
+                pid: agent.pid,
+                activity: agent.activity,
+                statusDetail: agent.detail,
+                project: agent.project ?? cwdName,
                 currentText: nil,
                 queuedCount: 0,
                 voice: nil,
                 lastSpokenAt: nil,
                 lastSpokenText: nil,
-                cwd: instance.cwd,
-                tty: agent?.tty,
-                mux: agent?.mux
+                cwd: agent.cwd,
+                tty: nil,
+                mux: nil
             )
-            
-            // Check if this pid has any voice history
-            let pidEntries = entries.filter { $0.pid == instance.pid }
+
+            // Overlay voice history
+            let pidEntries = entries.filter { $0.pid == agent.pid }
             if !pidEntries.isEmpty {
-                // Only consider entries from last 2 minutes as "playing" (in case status got stuck)
                 let recentCutoff = Date().addingTimeInterval(-120)
                 let playingEntry = pidEntries.first { $0.status == .playing && $0.timestamp > recentCutoff }
                 let queuedEntries = pidEntries.filter { $0.status == .queued && $0.timestamp > recentCutoff }
                 let playedEntries = pidEntries.filter { $0.status == .played }
-                
+
+                // Keep live agent status as the primary activity signal.
+                // Only fall back to speech-based activity when agent reports idle/waiting.
                 if let playing = playingEntry {
-                    session.activity = .speaking
+                    if session.activity == .idle || session.activity == .waiting {
+                        session.activity = .speaking
+                    }
                     session.currentText = playing.text
                     session.queuedCount = queuedEntries.count
                 } else if !queuedEntries.isEmpty {
-                    session.activity = .queued
+                    if session.activity == .idle || session.activity == .waiting {
+                        session.activity = .queued
+                    }
                     session.currentText = queuedEntries.first?.text
                     session.queuedCount = queuedEntries.count
                 }
-                
-                if let lastPlayed = playedEntries.sorted(by: { $0.timestamp > $1.timestamp }).first {
+
+                if let lastPlayed = playedEntries.max(by: { $0.timestamp < $1.timestamp }) {
                     session.lastSpokenAt = lastPlayed.timestamp
                     session.lastSpokenText = lastPlayed.text
                 }
-                
                 session.voice = pidEntries.compactMap { $0.voice }.first
             }
-            
+
             sessions.append(session)
         }
-        
-        // Also add any voice sessions that don't have a current pi process
-        // (e.g., from recent history where the process has since exited)
-        let cutoff = Date().addingTimeInterval(-activeSessionWindow)
-        var voiceOnlyBuckets: [String: [RequestHistoryEntry]] = [:]
-        
+
+        // Also show sessions with recent speech activity (even without live status events)
+        let recentCutoff = Date().addingTimeInterval(-activeSessionWindow)
+        var voiceBuckets: [Int: [RequestHistoryEntry]] = [:]  // keyed by pid
         for entry in entries {
-            // Skip if we already have this pid from process scan
-            if let pid = entry.pid, seenPids.contains(pid) { continue }
-            
-            let sourceApp = normalizedAppName(entry.sourceApp)
-            let sessionId = normalizedSessionId(entry.sessionId)
-            let key = "\(sourceApp)::\(sessionId ?? "__none__")"
-            
-            voiceOnlyBuckets[key, default: []].append(entry)
+            guard let pid = entry.pid, !seenPids.contains(pid) else { continue }
+            guard entry.timestamp > recentCutoff else { continue }
+            voiceBuckets[pid, default: []].append(entry)
         }
-        
-        for (key, bucketEntries) in voiceOnlyBuckets {
-            let sorted = bucketEntries.sorted { $0.timestamp > $1.timestamp }
-            guard let mostRecent = sorted.first, mostRecent.timestamp >= cutoff else { continue }
-            
-            let parts = key.split(separator: ":", maxSplits: 2)
-            let sourceApp = parts.count > 0 ? String(parts[0]) : "unknown"
-            let sessionId = parts.count > 1 ? String(parts[1].dropFirst()) : nil // drop leading ":"
-            
-            let playingEntry = bucketEntries.first { $0.status == .playing }
-            let queuedEntries = bucketEntries.filter { $0.status == .queued }
-            let playedEntries = bucketEntries.filter { $0.status == .played }
-            
+
+        for (pid, pidEntries) in voiceBuckets {
+            let key = "pid-\(pid)"
+            guard !sessions.contains(where: { $0.id == key }) else { continue }
+
+            let playingEntry = pidEntries.first { $0.status == .playing }
+            let queuedEntries = pidEntries.filter { $0.status == .queued }
+            let playedEntries = pidEntries.filter { $0.status == .played }
+
             var activity: VoiceActivity = .idle
             var currentText: String? = nil
-            var queuedCount = 0
-            
-            if let playing = playingEntry {
+
+            if playingEntry != nil {
                 activity = .speaking
-                currentText = playing.text
-                queuedCount = queuedEntries.count
+                currentText = playingEntry?.text
             } else if !queuedEntries.isEmpty {
                 activity = .queued
                 currentText = queuedEntries.first?.text
-                queuedCount = queuedEntries.count
+            } else {
+                // Don't keep idle fallback-only sessions around for long.
+                let lastEventAt = pidEntries.max(by: { $0.timestamp < $1.timestamp })?.timestamp ?? .distantPast
+                if Date().timeIntervalSince(lastEventAt) > 45 {
+                    continue
+                }
             }
-            
-            let pid = bucketEntries.compactMap { $0.pid }.first
-            let agent = pid.flatMap { agentsByPid[Int32($0)] }
-            
-            let session = VoiceSession(
+
+            // Get project name from process cwd
+            let projectName = Self.cwdForPid(pid).map { URL(fileURLWithPath: $0).lastPathComponent }
+
+            sessions.append(VoiceSession(
                 id: key,
-                sourceApp: sourceApp,
-                sessionId: sessionId == "__none__" ? nil : sessionId,
+                sourceApp: normalizedAppName(pidEntries.first?.sourceApp),
+                sessionId: pidEntries.first?.sessionId,
                 pid: pid,
                 activity: activity,
+                statusDetail: nil,
+                project: projectName,
                 currentText: currentText,
-                queuedCount: queuedCount,
-                voice: mostRecent.voice,
-                lastSpokenAt: playedEntries.sorted(by: { $0.timestamp > $1.timestamp }).first?.timestamp,
-                lastSpokenText: playedEntries.sorted(by: { $0.timestamp > $1.timestamp }).first?.text,
-                cwd: agent?.cwd,
-                tty: agent?.tty,
-                mux: agent?.mux
-            )
-            
-            sessions.append(session)
+                queuedCount: queuedEntries.count,
+                voice: pidEntries.compactMap { $0.voice }.first,
+                lastSpokenAt: playedEntries.max(by: { $0.timestamp < $1.timestamp })?.timestamp,
+                lastSpokenText: playedEntries.max(by: { $0.timestamp < $1.timestamp })?.text,
+                cwd: Self.cwdForPid(pid),
+                tty: nil,
+                mux: nil
+            ))
+            seenPids.insert(pid)
         }
-        
-        // Sort: speaking first, then running, then queued, then waiting, then idle
-        // Within each group, sort by most recent audio activity (lastSpokenAt)
+
+        // Final fallback: extension-owned inbox pids that are active but haven't emitted status/speech yet.
+        for pid in inboxPids where !seenPids.contains(pid) {
+            let cwd = Self.cwdForPid(pid)
+            let project = cwd.map { URL(fileURLWithPath: $0).lastPathComponent }
+            sessions.append(VoiceSession(
+                id: "pid-\(pid)",
+                sourceApp: "pi",
+                sessionId: nil,
+                pid: pid,
+                activity: .waiting,
+                statusDetail: nil,
+                project: project,
+                currentText: nil,
+                queuedCount: 0,
+                voice: nil,
+                lastSpokenAt: nil,
+                lastSpokenText: nil,
+                cwd: cwd,
+                tty: nil,
+                mux: nil
+            ))
+            seenPids.insert(pid)
+        }
+
+        // Sort: speaking > active work states > queued > waiting > idle, then by recency
+        let order: [VoiceActivity] = [.speaking, .starting, .thinking, .reading, .editing, .running, .searching, .error, .queued, .waiting, .idle]
         return sessions.sorted { lhs, rhs in
-            let order: [VoiceActivity] = [.speaking, .running, .queued, .waiting, .idle]
-            let lhsIdx = order.firstIndex(of: lhs.activity) ?? 99
-            let rhsIdx = order.firstIndex(of: rhs.activity) ?? 99
-            if lhsIdx != rhsIdx {
-                return lhsIdx < rhsIdx
-            }
-            // Within same activity, sort by most recent audio (most recent first)
-            let lhsTime = lhs.lastSpokenAt ?? .distantPast
-            let rhsTime = rhs.lastSpokenAt ?? .distantPast
-            if lhsTime != rhsTime {
-                return lhsTime > rhsTime
-            }
-            // Finally by PID as tiebreaker
+            let li = order.firstIndex(of: lhs.activity) ?? 99
+            let ri = order.firstIndex(of: rhs.activity) ?? 99
+            if li != ri { return li < ri }
+            let lt = lhs.lastSpokenAt ?? .distantPast
+            let rt = rhs.lastSpokenAt ?? .distantPast
+            if lt != rt { return lt > rt }
             return (lhs.pid ?? 0) < (rhs.pid ?? 0)
         }
     }
-    
-    nonisolated private static func buildSummary(from sessions: [VoiceSession]) -> VoiceSummary {
+
+    private static func buildSummary(from sessions: [VoiceSession]) -> VoiceSummary {
         let total = sessions.count
         let speaking = sessions.filter { $0.activity == .speaking }.count
-        let running = sessions.filter { $0.activity == .running }.count
+        let workingSessions = sessions.filter { $0.activity.isWorkStatus }
+        let working = workingSessions.count
         let queued = sessions.filter { $0.activity == .queued }.count
         let waiting = sessions.filter { $0.activity == .waiting }.count
-        let idle = total - speaking - running - queued - waiting
-        
+        let idle = total - speaking - working - queued - waiting
+
         let color: String
         let label: String
-        
-        // Simple color logic: green if ANY session is waiting for input, otherwise default
-        if waiting > 0 {
-            color = "green"
-            label = "\(waiting) waiting for input"
-        } else if total == 0 {
+
+        if total == 0 {
             color = "default"
             label = "No Pi agents"
         } else if speaking > 0 {
-            color = "default"
-            label = "Speaking"
-        } else if running > 0 {
-            color = "default"
-            label = "\(running) running"
+            color = "red"
+            label = speaking == 1 ? "Speaking" : "\(speaking) speaking"
+        } else if working > 0 {
+            let precedence: [VoiceActivity] = [.starting, .thinking, .reading, .editing, .running, .searching, .error]
+            let primary = precedence.first { activity in sessions.contains(where: { $0.activity == activity }) } ?? .running
+            let primaryCount = sessions.filter { $0.activity == primary }.count
+            switch primary {
+            case .starting: color = "green"
+            case .thinking: color = "orange"
+            case .reading: color = "blue"
+            case .editing: color = "yellow"
+            case .running: color = "orange"
+            case .searching: color = "orange"
+            case .error: color = "red"
+            default: color = "default"
+            }
+            label = working == 1
+                ? primary.label
+                : (primaryCount == working ? "\(primaryCount) \(primary.label.lowercased())" : "\(working) active")
         } else if queued > 0 {
-            color = "default"
-            label = "Queued"
+            color = "orange"
+            label = queued == 1 ? "Queued" : "\(queued) queued"
+        } else if waiting > 0 {
+            color = "green"
+            label = waiting == 1 ? "Waiting" : "\(waiting) waiting"
         } else {
             color = "default"
             label = "Idle"
         }
-        
-        return VoiceSummary(
-            total: total,
-            speaking: speaking,
-            queued: queued,
-            idle: idle,
-            color: color,
-            label: label
-        )
+
+        return VoiceSummary(total: total, speaking: speaking, queued: queued, idle: idle, color: color, label: label)
     }
-    
+
     private func checkServerHealth() {
-        // Check provider readiness for the currently selected TTS provider
         switch SpeechPlaybackCoordinator.currentProvider {
         case .elevenlabs:
             serverOnline = ElevenLabsApiKeyManager.resolvedKey() != nil
@@ -635,14 +525,79 @@ final class VoiceMonitor: ObservableObject {
             serverOnline = LocalTTSRuntime.shared.isRuntimeAvailable() && LocalTTSRuntime.shared.isModelInstalled()
         }
     }
-    
-    nonisolated private static func normalizedAppName(_ sourceApp: String?) -> String {
+
+    /// Discover active pi sessions from extension-owned inbox directories.
+    /// This avoids telemetry polling and gives us a stable fallback session list.
+    private static func activeInboxPids() -> [Int] {
+        let inboxRoot = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".pi/agent/pitalk-inbox", isDirectory: true)
+
+        guard let items = try? FileManager.default.contentsOfDirectory(
+            at: inboxRoot,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        let now = Date()
+        let maxAge: TimeInterval = 60 * 60 * 6  // ignore very stale crash leftovers
+
+        return items.compactMap { url in
+            guard let pid = Int(url.lastPathComponent) else { return nil }
+            let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
+            if let modified = values?.contentModificationDate,
+               now.timeIntervalSince(modified) > maxAge {
+                return nil
+            }
+            return pid
+        }
+    }
+
+    private static let cwdCacheLock = NSLock()
+    private static var cwdCache: [Int: (path: String, updatedAt: Date)] = [:]
+    private static let cwdCacheTTL: TimeInterval = 10
+
+    /// Best-effort cwd lookup for pid (used when extension status events are unavailable).
+    private static func cwdForPid(_ pid: Int) -> String? {
+        let now = Date()
+        cwdCacheLock.lock()
+        if let cached = cwdCache[pid], now.timeIntervalSince(cached.updatedAt) < cwdCacheTTL {
+            cwdCacheLock.unlock()
+            return cached.path
+        }
+        cwdCacheLock.unlock()
+
+        let pipe = Pipe()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        process.arguments = ["-a", "-p", "\(pid)", "-d", "cwd", "-Fn"]
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let output = String(data: data, encoding: .utf8) ?? ""
+            for line in output.split(separator: "\n") where line.hasPrefix("n/") {
+                let path = String(line.dropFirst())
+                cwdCacheLock.lock()
+                cwdCache[pid] = (path: path, updatedAt: now)
+                cwdCacheLock.unlock()
+                return path
+            }
+        } catch {}
+
+        cwdCacheLock.lock()
+        cwdCache.removeValue(forKey: pid)
+        cwdCacheLock.unlock()
+        return nil
+    }
+
+    private static func normalizedAppName(_ sourceApp: String?) -> String {
         let trimmed = sourceApp?.trimmingCharacters(in: .whitespacesAndNewlines)
         return (trimmed?.isEmpty == false) ? trimmed! : "Unknown"
     }
-    
-    nonisolated private static func normalizedSessionId(_ sessionId: String?) -> String? {
-        let trimmed = sessionId?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (trimmed?.isEmpty == false) ? trimmed : nil
-    }
+
 }

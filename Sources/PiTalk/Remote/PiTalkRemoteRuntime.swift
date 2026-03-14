@@ -189,6 +189,8 @@ final class PiTalkRemoteRuntime {
             pid: session.pid,
             activity: activityCode(session.activity),
             activityLabel: session.activity.label,
+            statusDetail: session.statusDetail,
+            project: session.project,
             currentText: session.currentText,
             queuedCount: session.queuedCount,
             voice: session.voice,
@@ -217,7 +219,13 @@ final class PiTalkRemoteRuntime {
         switch activity {
         case .speaking: return "speaking"
         case .queued: return "queued"
+        case .starting: return "starting"
+        case .thinking: return "thinking"
+        case .reading: return "reading"
+        case .editing: return "editing"
         case .running: return "running"
+        case .searching: return "searching"
+        case .error: return "error"
         case .waiting: return "waiting"
         case .idle: return "idle"
         }

@@ -23,7 +23,7 @@ fileprivate func debugLog(_ message: String) {
 struct PiTalkApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var monitor = VoiceMonitor()
-    
+
     var body: some Scene {
         // MenuBarExtra with window style (like pi-statusbar)
         MenuBarExtra {
@@ -32,7 +32,7 @@ struct PiTalkApp: App {
             StatusBarIcon(summary: monitor.summary, serverOnline: monitor.serverOnline, serverEnabled: monitor.serverEnabled)
         }
         .menuBarExtraStyle(.window)
-        
+
         // Settings scene
         Settings {
             EmptyView()
@@ -43,7 +43,7 @@ struct PiTalkApp: App {
 class AppDelegate: NSObject, NSApplicationDelegate {
     // Shared instance for access from SwiftUI views
     static var shared: AppDelegate?
-    
+
     // Menu bar UI is handled by SwiftUI MenuBarExtra
     // TTS can run via cloud providers or optional local on-device runtime
     var settingsWindow: NSWindow?
@@ -51,25 +51,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var localBroker: LocalSpeechBroker?
     var micMonitor: MicrophoneActivityMonitor?
     let brokerPort = 18081
-    
+
     // Dock icon visibility (defaults to true so window is accessible)
     var showDockIcon: Bool {
-        get { 
+        get {
             if UserDefaults.standard.object(forKey: "showDockIcon") == nil {
                 return true  // Default to showing dock icon
             }
-            return UserDefaults.standard.bool(forKey: "showDockIcon") 
+            return UserDefaults.standard.bool(forKey: "showDockIcon")
         }
         set {
             UserDefaults.standard.set(newValue, forKey: "showDockIcon")
             updateDockIconVisibility()
         }
     }
-    
+
     var selectedVoice: String {
         UserDefaults.standard.string(forKey: "ttsVoice") ?? "ally"
     }
-    
+
     // Server enabled state - persisted (inverted storage as "serverDisabled")
     var serverEnabled: Bool {
         get { !UserDefaults.standard.bool(forKey: "serverDisabled") }
@@ -78,7 +78,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             speechCoordinator?.isMuted = !newValue
         }
     }
-    
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Set shared instance for access from SwiftUI
         AppDelegate.shared = self
@@ -91,7 +91,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case .alreadyConfigured, .notFound:
             break
         }
-        
+
         switch GoogleApiKeyManager.bootstrapPersistedKeyIfNeeded() {
         case .importedFromEnvironment:
             debugLog("PiTalk: Imported Google TTS API key from process environment")
@@ -100,7 +100,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case .alreadyConfigured, .notFound:
             break
         }
-        
+
         // Menu bar is now handled by SwiftUI MenuBarExtra
         setupKeyboardShortcuts()
         updateDockIconVisibility()
@@ -108,7 +108,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         speechCoordinator = SpeechPlaybackCoordinator(
             defaultVoiceProvider: { [weak self] in self?.selectedVoice ?? "ally" }
         )
-        
+
         // Restore server enabled state from preferences
         speechCoordinator?.isMuted = !serverEnabled
 
@@ -132,13 +132,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         remoteRuntime = PiTalkRemoteRuntime(appDelegate: self)
         remoteRuntime?.startIfEnabled()
     }
-    
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         // When dock icon is clicked, open settings
         openSettings()
         return true
     }
-    
+
     func updateDockIconVisibility() {
         if showDockIcon {
             NSApp.setActivationPolicy(.regular)
@@ -149,7 +149,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.setActivationPolicy(.accessory)
         }
     }
-    
+
     func applicationWillTerminate(_ notification: Notification) {
         remoteRuntime?.stop()
         micMonitor?.stop()
@@ -158,9 +158,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         speechCoordinator?.stopAll()
         KeyboardShortcutManager.shared.unregisterAll()
     }
-    
+
     // MARK: - Global Keyboard Shortcuts
-    
+
     func setupKeyboardShortcuts() {
         let manager = KeyboardShortcutManager.shared
 
@@ -192,20 +192,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     var healthServer: HealthHTTPServer?
     var remoteRuntime: PiTalkRemoteRuntime?
-    
+
     func startLocalBroker() {
         debugLog("PiTalk: startLocalBroker called, coordinator=\(speechCoordinator != nil), localBroker=\(localBroker != nil)")
         guard let coordinator = speechCoordinator else {
             debugLog("PiTalk: No coordinator, cannot start broker")
             return
         }
-        
+
         // Don't start if already running
         if localBroker != nil {
             debugLog("PiTalk: Broker already running, skipping start")
             return
         }
-        
+
         do {
             let broker = try LocalSpeechBroker(port: brokerPort, coordinator: coordinator)
             broker.start()
@@ -228,7 +228,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
     }
-    
+
     func stopLocalBroker() {
         debugLog("PiTalk: stopLocalBroker called, localBroker=\(localBroker != nil)")
         localBroker?.stop()
@@ -237,23 +237,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         healthServer = nil
         debugLog("PiTalk: Broker and health server stopped")
     }
-    
+
     @objc func stopCurrentSpeech() {
         // Centralized stop: clear broker queue, stop active PiTalk playback, stop current synth request.
         speechCoordinator?.stopAll()
     }
-    
+
     @objc func toggleDockIcon() {
         showDockIcon = !showDockIcon
     }
-    
+
     // MARK: - Actions
-    
+
     @objc func openSettings() {
         if settingsWindow == nil {
             let settingsView = SettingsView()
             let hostingController = NSHostingController(rootView: settingsView)
-            
+
             let window = NSWindow(contentViewController: hostingController)
             window.title = "PiTalk"
             window.styleMask = [.titled, .closable, .resizable, .miniaturizable]
@@ -263,18 +263,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             window.setContentSize(NSSize(width: 520, height: 680))
             window.minSize = NSSize(width: 420, height: 480)
             window.center()
-            
+
             settingsWindow = window
         }
-        
+
         settingsWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
-    
+
     @objc func quitApp() {
         NSApp.terminate(nil)
     }
-    
+
     func showAlert(title: String, message: String) {
         let alert = NSAlert()
         alert.messageText = title
@@ -303,6 +303,12 @@ private struct BrokerRequest: Decodable {
     let sourceApp: String?
     let sessionId: String?
     let pid: Int?
+    // Status event fields (type: "status")
+    let status: String?
+    let detail: String?
+    let project: String?
+    let cwd: String?
+    let contextPercent: Int?
 }
 
 private struct BrokerResponse: Encodable {
@@ -687,7 +693,7 @@ final class MicrophoneActivityMonitor {
     private func setActive(_ active: Bool) {
         guard active != isActive else { return }
         isActive = active
-        
+
         if ProcessInfo.processInfo.environment["PITALK_DEBUG"] == "1" {
             print("PiTalk: Microphone activity changed: \(active ? "ACTIVE" : "INACTIVE")")
         }
@@ -714,7 +720,7 @@ final class SpeechPlaybackCoordinator {
     private var ffplayRawMonoArgsByPath: [String: [String]] = [:]
 
     private var isMicrophoneActive = false
-    
+
     // Mute toggle - when true, requests are tracked but not spoken
     private var _isMuted = false
     var isMuted: Bool {
@@ -823,7 +829,7 @@ final class SpeechPlaybackCoordinator {
         let state = queue.sync { () -> (pending: [UUID], active: UUID?) in
             let pendingIds = allPendingHistoryIdsLocked()
             let activeId = currentJobHistoryId
-            
+
             debugLog("PiTalk: stopAll - pending=\(pendingIds.count), hasActive=\(activeId != nil), currentProcess=\(currentProcess != nil)")
 
             queuesByKey.removeAll()
@@ -928,7 +934,7 @@ final class SpeechPlaybackCoordinator {
     private func handleMicrophoneStateChangeLocked(_ active: Bool) {
         guard active != isMicrophoneActive else { return }
         isMicrophoneActive = active
-        
+
         let hasProcess = currentProcess != nil
         let isRunning = currentProcess?.isRunning == true
         debugLog("PiTalk: Coordinator mic state: \(active ? "ACTIVE" : "INACTIVE"), hasProcess=\(hasProcess), isRunning=\(isRunning), isPlaying=\(isPlaying)")
@@ -937,17 +943,17 @@ final class SpeechPlaybackCoordinator {
             // Check if we're actively playing OR in the middle of synthesizing (isPlaying but process not yet started)
             let activelyPlaying = currentProcess?.isRunning == true
             let synthesizing = isPlaying && currentProcess == nil
-            
+
             // Requirement: if mic starts while voice is playing/synthesizing, cancel all queued work at that moment.
-            guard activelyPlaying || synthesizing else { 
+            guard activelyPlaying || synthesizing else {
                 debugLog("PiTalk: Mic active but no playback/synthesis running, skipping stop")
-                return 
+                return
             }
             debugLog("PiTalk: Mic active, stopping playback! (activelyPlaying=\(activelyPlaying), synthesizing=\(synthesizing))")
 
             let activeId = currentJobHistoryId
             let interruptedQueueKey = currentQueueKey
-            
+
             // Only cancel messages from the currently playing app/session, pause others
             var cancelledIds: [UUID] = []
             if let key = interruptedQueueKey {
@@ -958,7 +964,7 @@ final class SpeechPlaybackCoordinator {
                 queueOrder.removeAll { $0 == key }
                 debugLog("PiTalk: Cancelled queue '\(key)' with \(cancelledIds.count) pending, \(queuesByKey.count) other queues paused")
             }
-            
+
             // Keep voice assignments so this queue key keeps the same voice after interruption.
             terminateCurrentProcessLocked()
             currentJobHistoryId = nil
@@ -1087,7 +1093,7 @@ final class SpeechPlaybackCoordinator {
         case elevenlabs = "elevenlabs"
         case google = "google"
         case local = "local"
-        
+
         var displayName: String {
             switch self {
             case .elevenlabs: return "ElevenLabs"
@@ -1096,48 +1102,48 @@ final class SpeechPlaybackCoordinator {
             }
         }
     }
-    
+
     static var currentProvider: TTSProvider {
         TTSProvider(rawValue: UserDefaults.standard.string(forKey: "ttsProvider") ?? "elevenlabs") ?? .elevenlabs
     }
-    
+
     // ElevenLabs voice ID mapping - British & Scottish voices only
     private static let elevenLabsVoices: [String: String] = [
         // Preferred voices (first in pool)
         "ally": "v2zbX16tJNtRIx8rSHDM",        // Ally - Scottish Glaswegian, relaxed male
         "dorothy": "ThT5KcBeYPX3keUQqHPh",     // Dorothy - British, pleasant young female
         "lily": "pFZP5JQG7iQjIQuC4Bku",        // Lily - British, middle-aged raspy female
-        
+
         // Other British voices
         "alice": "Xb7hH8MSUJpSbSDYk0k2",       // Alice - British, confident female, news style
         "dave": "CYw3kZ02Hs0563khs1Fj",        // Dave - British Essex, conversational male
         "joseph": "Zlb1dXrM653N07WRdFW3",      // Joseph - British, middle-aged news reporter
     ]
-    
+
     // Google Cloud TTS voices - British & Australian
     // Format: display name -> (voice name, language code)
     private static let googleVoices: [String: (voiceName: String, languageCode: String)] = [
         // British - Studio (highest quality)
         "george": ("en-GB-Studio-B", "en-GB"),      // British male, studio quality
         "emma": ("en-GB-Studio-C", "en-GB"),        // British female, studio quality
-        
+
         // British - Neural2 (high quality)
         "oliver": ("en-GB-Neural2-B", "en-GB"),     // British male
         "sophia": ("en-GB-Neural2-A", "en-GB"),     // British female
         "charlotte": ("en-GB-Neural2-C", "en-GB"),  // British female
         "william": ("en-GB-Neural2-D", "en-GB"),    // British male
-        
+
         // Australian - Neural2
         "jack": ("en-AU-Neural2-B", "en-AU"),       // Australian male
         "olivia": ("en-AU-Neural2-A", "en-AU"),     // Australian female
         "isla": ("en-AU-Neural2-C", "en-AU"),       // Australian female
         "liam": ("en-AU-Neural2-D", "en-AU"),       // Australian male
     ]
-    
+
     static let googleVoicePool = ["george", "emma", "oliver", "sophia", "jack", "olivia"]
     static let elevenLabsVoicePool = ["ally", "dorothy", "lily", "alice", "dave", "joseph"]
     static let localVoicePool = ["alba", "fantine", "cosette", "marius", "eponine", "azelma", "javert"]
-    
+
     private func synthesize(job: SpeechJob) async throws -> Data {
         switch Self.currentProvider {
         case .elevenlabs:
@@ -1166,7 +1172,7 @@ final class SpeechPlaybackCoordinator {
         guard abs(speed - 1.0) > 0.01 else { return nil }
         return String(format: "atempo=%.2f", speed)
     }
-    
+
     private func synthesizeWithElevenLabs(job: SpeechJob) async throws -> Data {
         // Get API key from environment, app settings, or ~/.env
         guard let apiKey = ElevenLabsApiKeyManager.resolvedKey(), !apiKey.isEmpty else {
@@ -1174,10 +1180,10 @@ final class SpeechPlaybackCoordinator {
                 NSLocalizedDescriptionKey: "ElevenLabs API key not found. Add it in settings or import it from ~/.env."
             ])
         }
-        
+
         // Map voice name to ElevenLabs voice ID (default to "ally")
         let voiceId = Self.elevenLabsVoices[job.voice.lowercased()] ?? Self.elevenLabsVoices["ally"] ?? "v2zbX16tJNtRIx8rSHDM"
-        
+
         let url = URL(string: "https://api.elevenlabs.io/v1/text-to-speech/\(voiceId)")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -1206,7 +1212,7 @@ final class SpeechPlaybackCoordinator {
         guard let httpResponse = response as? HTTPURLResponse else {
             throw NSError(domain: "PiTalk", code: 500, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
         }
-        
+
         guard httpResponse.statusCode == 200 else {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
             throw NSError(domain: "PiTalk", code: httpResponse.statusCode, userInfo: [
@@ -1216,26 +1222,26 @@ final class SpeechPlaybackCoordinator {
 
         return data
     }
-    
+
     private func synthesizeWithGoogle(job: SpeechJob) async throws -> Data {
         guard let apiKey = GoogleApiKeyManager.resolvedKey(), !apiKey.isEmpty else {
             throw NSError(domain: "PiTalk", code: 401, userInfo: [
                 NSLocalizedDescriptionKey: "Google Cloud API key not found. Add it in settings or import it from ~/.env."
             ])
         }
-        
+
         // Map voice name to Google voice (default to "george")
         let voiceConfig = Self.googleVoices[job.voice.lowercased()] ?? Self.googleVoices["george"] ?? ("en-GB-Studio-B", "en-GB")
-        
+
         let url = URL(string: "https://texttospeech.googleapis.com/v1/text:synthesize?key=\(apiKey)")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 30
         request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
-        
+
         // Google can use the full slider range.
         let speed = configuredSpeechSpeed()
-        
+
         let body: [String: Any] = [
             "input": ["text": job.text],
             "voice": [
@@ -1249,19 +1255,19 @@ final class SpeechPlaybackCoordinator {
             ]
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
+
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw NSError(domain: "PiTalk", code: 500, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
         }
-        
+
         guard httpResponse.statusCode == 200 else {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
             throw NSError(domain: "PiTalk", code: httpResponse.statusCode, userInfo: [
                 NSLocalizedDescriptionKey: "Google TTS API error (\(httpResponse.statusCode)): \(errorMessage)"
             ])
         }
-        
+
         // Google returns JSON with base64-encoded audio
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let audioContentBase64 = json["audioContent"] as? String,
@@ -1270,10 +1276,10 @@ final class SpeechPlaybackCoordinator {
                 NSLocalizedDescriptionKey: "Failed to decode Google TTS response"
             ])
         }
-        
+
         return audioData
     }
-    
+
     private func synthesizeWithLocal(job: SpeechJob) async throws -> Data {
         guard LocalTTSRuntime.shared.isModelInstalled() else {
             throw NSError(domain: "PiTalk", code: 503, userInfo: [
@@ -1283,7 +1289,7 @@ final class SpeechPlaybackCoordinator {
 
         return try await LocalTTSRuntime.shared.synthesize(text: job.text, voice: job.voice)
     }
-    
+
     private func audioStreamID(job: SpeechJob, runNonce: UUID) -> String {
         "\(job.historyEntryId.uuidString)-\(runNonce.uuidString)"
     }
@@ -1345,7 +1351,7 @@ final class SpeechPlaybackCoordinator {
             }
         }
     }
-    
+
     /// Google TTS - non-streaming (Google REST API doesn't support streaming)
     private func synthesizeAndPlayGoogle(job: SpeechJob, runNonce: UUID) async throws {
         guard let ffplayPath = findFFPlayPath() else {
@@ -1681,7 +1687,7 @@ final class SpeechPlaybackCoordinator {
         data.append(pcm)
         return data
     }
-    
+
     /// ElevenLabs streaming TTS
     private func synthesizeAndPlayStreamingElevenLabs(job: SpeechJob, runNonce: UUID) async throws {
         // Get API key from environment, app settings, or ~/.env
@@ -1690,7 +1696,7 @@ final class SpeechPlaybackCoordinator {
                 NSLocalizedDescriptionKey: "ElevenLabs API key not found. Add it in settings or import it from ~/.env."
             ])
         }
-        
+
         guard let ffplayPath = findFFPlayPath() else {
             throw NSError(domain: "PiTalk", code: 404, userInfo: [
                 NSLocalizedDescriptionKey: "ffplay not found. Install with: brew install ffmpeg"
@@ -1704,10 +1710,10 @@ final class SpeechPlaybackCoordinator {
                 emitAudioMirrorEnd(streamId: streamId, status: "failed")
             }
         }
-        
+
         // Map voice name to ElevenLabs voice ID
         let voiceId = Self.elevenLabsVoices[job.voice.lowercased()] ?? Self.elevenLabsVoices["ally"] ?? "v2zbX16tJNtRIx8rSHDM"
-        
+
         // Use streaming endpoint with flash model for lowest latency
         // Use mp3_44100_64 for good quality with lower bandwidth
         var urlComponents = URLComponents(string: "https://api.elevenlabs.io/v1/text-to-speech/\(voiceId)/stream")!
@@ -1715,7 +1721,7 @@ final class SpeechPlaybackCoordinator {
             URLQueryItem(name: "output_format", value: "mp3_44100_64"),
             URLQueryItem(name: "optimize_streaming_latency", value: "4")
         ]
-        
+
         var request = URLRequest(url: urlComponents.url!)
         request.httpMethod = "POST"
         request.timeoutInterval = 60
@@ -1724,11 +1730,11 @@ final class SpeechPlaybackCoordinator {
 
         // ElevenLabs has a strict upper bound in practice; cap to 1.2.
         let speed = elevenLabsConfiguredSpeechSpeed()
-        
+
         if ProcessInfo.processInfo.environment["PITALK_DEBUG"] == "1" {
             print("PiTalk: Synthesizing with speed=\(speed), voice=\(job.voice), text=\(job.text.prefix(50))...")
         }
-        
+
         var voiceSettings: [String: Any] = [
             "stability": 0.5,
             "similarity_boost": 0.75
@@ -1737,33 +1743,33 @@ final class SpeechPlaybackCoordinator {
         if abs(speed - 1.0) > 0.01 {
             voiceSettings["speed"] = speed
         }
-        
+
         let body: [String: Any] = [
             "text": job.text,
             "model_id": "eleven_flash_v2_5",  // Fastest model (~75ms latency)
             "voice_settings": voiceSettings
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
+
         // Stream to temp file and start playing once we have some data
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("pitalk-stream-\(UUID().uuidString).mp3")
-        
+
         FileManager.default.createFile(atPath: tempURL.path, contents: nil)
         let fileHandle = try FileHandle(forWritingTo: tempURL)
-        
+
         defer {
             try? fileHandle.close()
             try? FileManager.default.removeItem(at: tempURL)
         }
-        
+
         // Use bytes(for:) to stream the response
         let (asyncBytes, response) = try await URLSession.shared.bytes(for: request)
-        
+
         guard let httpResponse = response as? HTTPURLResponse else {
             throw NSError(domain: "PiTalk", code: 500, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
         }
-        
+
         guard httpResponse.statusCode == 200 else {
             var errorData = Data()
             for try await byte in asyncBytes {
@@ -1777,14 +1783,14 @@ final class SpeechPlaybackCoordinator {
         }
 
         streamId = emitAudioMirrorStart(job: job, runNonce: runNonce)
-        
+
         // Collect chunks and start playback early
         var totalBytes = 0
         var playbackStarted = false
         var ffplayProcess: Process?
         var buffer = Data()
         let flushSize = 4096  // Flush every 4KB
-        
+
         for try await byte in asyncBytes {
             if !shouldContinue(runNonce: runNonce) {
                 ffplayProcess?.terminate()
@@ -1794,10 +1800,10 @@ final class SpeechPlaybackCoordinator {
                 }
                 return
             }
-            
+
             buffer.append(byte)
             totalBytes += 1
-            
+
             // Flush buffer periodically
             if buffer.count >= flushSize {
                 fileHandle.write(buffer)
@@ -1806,11 +1812,11 @@ final class SpeechPlaybackCoordinator {
                 }
                 buffer.removeAll(keepingCapacity: true)
             }
-            
+
             // Start playback after receiving ~16KB of audio data (enough for ffplay to start)
             if !playbackStarted && totalBytes >= 16384 {
                 playbackStarted = true
-                
+
                 // Flush remaining buffer
                 if !buffer.isEmpty {
                     fileHandle.write(buffer)
@@ -1820,7 +1826,7 @@ final class SpeechPlaybackCoordinator {
                     buffer.removeAll(keepingCapacity: true)
                 }
                 try fileHandle.synchronize()
-                
+
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: ffplayPath)
                 process.arguments = [
@@ -1829,16 +1835,16 @@ final class SpeechPlaybackCoordinator {
                     "-loglevel", "quiet",
                     tempURL.path
                 ]
-                
+
                 try process.run()
                 ffplayProcess = process
-                
+
                 queue.sync {
                     self.currentProcess = process
                 }
             }
         }
-        
+
         // Flush any remaining buffer
         if !buffer.isEmpty {
             fileHandle.write(buffer)
@@ -1846,11 +1852,11 @@ final class SpeechPlaybackCoordinator {
                 emitAudioMirrorChunk(streamId: streamId, data: buffer)
             }
         }
-        
+
         // If we never started playback (very short audio), start it now
         if !playbackStarted {
             try fileHandle.synchronize()
-            
+
             let process = Process()
             process.executableURL = URL(fileURLWithPath: ffplayPath)
             process.arguments = [
@@ -1859,15 +1865,15 @@ final class SpeechPlaybackCoordinator {
                 "-loglevel", "quiet",
                 tempURL.path
             ]
-            
+
             try process.run()
             ffplayProcess = process
-            
+
             queue.sync {
                 self.currentProcess = process
             }
         }
-        
+
         // Wait for ffplay to finish
         if let process = ffplayProcess {
             await withCheckedContinuation { continuation in
@@ -1938,29 +1944,29 @@ final class SpeechPlaybackCoordinator {
 
         do {
             try probe.run()
-            
+
             // Read pipes on background threads BEFORE waitUntilExit to avoid
             // deadlock when output exceeds the pipe buffer (~16 KB on macOS).
             // ffplay -h full easily produces 100 KB+.
             var outputData = Data()
             var errorData = Data()
             let group = DispatchGroup()
-            
+
             group.enter()
             DispatchQueue.global().async {
                 outputData = out.fileHandleForReading.readDataToEndOfFile()
                 group.leave()
             }
-            
+
             group.enter()
             DispatchQueue.global().async {
                 errorData = err.fileHandleForReading.readDataToEndOfFile()
                 group.leave()
             }
-            
+
             probe.waitUntilExit()
             group.wait()
-            
+
             var output = outputData
             output.append(errorData)
             if let text = String(data: output, encoding: .utf8) {
@@ -2220,6 +2226,25 @@ final class LocalSpeechBroker {
             let state = coordinator.state()
             send(response: .success(pending: state.pending, playing: state.playing, currentQueue: state.currentQueue), on: connection)
 
+        case "status":
+            guard let pid = request.pid else {
+                send(response: .failure("Missing pid for status"), on: connection)
+                return
+            }
+            if request.status == "remove" {
+                AgentStatusStore.shared.remove(pid: pid)
+            } else {
+                AgentStatusStore.shared.update(
+                    pid: pid,
+                    project: request.project,
+                    cwd: request.cwd,
+                    status: request.status ?? "unknown",
+                    detail: request.detail,
+                    contextPercent: request.contextPercent
+                )
+            }
+            send(response: .success(), on: connection)
+
         default:
             send(response: .failure("Unknown command: \(request.type)"), on: connection)
         }
@@ -2249,7 +2274,7 @@ final class LocalSpeechBroker {
 
 struct SettingsView: View {
     @StateObject private var monitor = VoiceMonitor()
-    
+
     var body: some View {
         TabView {
             SessionsTabView(monitor: monitor)
@@ -2284,7 +2309,7 @@ struct SettingsView: View {
 
 struct SessionsTabView: View {
     @ObservedObject var monitor: VoiceMonitor
-    
+
     var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -2294,9 +2319,9 @@ struct SessionsTabView: View {
                     .frame(width: 12, height: 12)
                 Text(monitor.summary.label)
                     .font(.headline)
-                
+
                 Spacer()
-                
+
                 // Speed control
                 HStack(spacing: 4) {
                     Image(systemName: "hare")
@@ -2308,7 +2333,7 @@ struct SessionsTabView: View {
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
-                
+
                 // Server toggle
                 Toggle("", isOn: Binding(
                     get: { monitor.serverEnabled },
@@ -2321,7 +2346,7 @@ struct SessionsTabView: View {
                 .controlSize(.small)
             }
             .padding()
-            
+
             // Status pills
             HStack(spacing: 8) {
                 StatusPill(text: "sessions: \(monitor.sessions.count)")
@@ -2335,9 +2360,9 @@ struct SessionsTabView: View {
             }
             .padding(.horizontal)
             .padding(.bottom, 8)
-            
+
             Divider()
-            
+
             // Sessions list
             if monitor.sessions.isEmpty {
                 VStack {
@@ -2360,18 +2385,18 @@ struct SessionsTabView: View {
                     .padding(.vertical, 8)
                 }
             }
-            
+
             Divider()
-            
+
             // Footer buttons
             HStack {
                 Button("Stop All") {
                     monitor.stopAll()
                 }
                 .disabled(monitor.speakingCount == 0 && monitor.totalQueuedItems == 0)
-                
+
                 Spacer()
-                
+
                 if let message = monitor.lastMessage, !message.isEmpty {
                     Text(message)
                         .font(.caption)
@@ -2380,13 +2405,14 @@ struct SessionsTabView: View {
             }
             .padding()
         }
+        .onAppear { monitor.start() }
     }
 }
 
 struct StatusPill: View {
     let text: String
     var color: Color = .secondary
-    
+
     var body: some View {
         Text(text)
             .font(.caption)
@@ -2402,47 +2428,57 @@ struct SessionRowView: View {
     let session: VoiceSession
     @ObservedObject var monitor: VoiceMonitor
     @State private var isHovered = false
-    
+
     private var displayName: String {
-        let app = session.sourceApp
-        if let sid = session.sessionId {
-            let shortId = sid.prefix(12)
-            return "\(app) [\(shortId)...]"
-        }
-        return app
+        session.project.flatMap { looksReadable($0) ? $0 : nil }
+            ?? session.cwd.map { URL(fileURLWithPath: $0).lastPathComponent }
+            ?? session.sourceApp
     }
-    
+
+    private func looksReadable(_ s: String) -> Bool {
+        // Filter out UUIDs and hex-heavy strings
+        if UUID(uuidString: s) != nil { return false }
+        let hexDash = s.filter { $0.isHexDigit || $0 == "-" }
+        return !(hexDash.count > s.count / 2 && s.count > 8)
+    }
+
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
             // Status indicator
             Circle()
                 .fill(session.activity.color)
                 .frame(width: 10, height: 10)
-            
+
             // Main content
             VStack(alignment: .leading, spacing: 4) {
                 // Title row
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(displayName)
                         .font(.system(.body, design: .default, weight: .semibold))
-                    
+
                     Text("·")
                         .foregroundStyle(.tertiary)
-                    
+
                     Text(session.activity.label)
                         .font(.subheadline)
                         .foregroundStyle(session.activity.color)
                 }
-                
-                // Last spoken text
-                if let text = session.currentText ?? session.lastSpokenText {
+
+                // Detail line: prefer live status detail while running, then speech text
+                if session.activity.isWorkStatus, let detail = session.statusDetail, !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .truncationMode(.tail)
+                } else if let text = session.currentText ?? session.lastSpokenText {
                     Text(text)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                         .truncationMode(.tail)
                 }
-                
+
                 // Metadata row
                 HStack(spacing: 12) {
                     if let pid = session.pid {
@@ -2455,7 +2491,7 @@ struct SessionRowView: View {
                         }
                         .foregroundStyle(.tertiary)
                     }
-                    
+
                     if let voice = session.voice {
                         Label {
                             Text(voice)
@@ -2466,7 +2502,7 @@ struct SessionRowView: View {
                         }
                         .foregroundStyle(.tertiary)
                     }
-                    
+
                     if session.queuedCount > 0 {
                         Label {
                             Text("\(session.queuedCount) queued")
@@ -2479,9 +2515,9 @@ struct SessionRowView: View {
                     }
                 }
             }
-            
+
             Spacer()
-            
+
             // Jump button
             if session.pid != nil {
                 Button {
@@ -2535,14 +2571,14 @@ struct SessionRowView: View {
 /// Section header with uppercase text and line
 struct SettingsSectionHeader: View {
     let title: String
-    
+
     var body: some View {
         HStack(spacing: 12) {
             Text(title.uppercased())
                 .font(.system(size: 11, weight: .medium))
                 .foregroundColor(.secondary)
                 .tracking(0.5)
-            
+
             Rectangle()
                 .fill(Color.secondary.opacity(0.2))
                 .frame(height: 1)
@@ -2557,13 +2593,13 @@ struct SettingsRow<Content: View>: View {
     let label: String
     let subtitle: String?
     @ViewBuilder let content: () -> Content
-    
+
     init(_ label: String, subtitle: String? = nil, @ViewBuilder content: @escaping () -> Content) {
         self.label = label
         self.subtitle = subtitle
         self.content = content
     }
-    
+
     var body: some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 2) {
@@ -2601,16 +2637,16 @@ struct SettingsTabView: View {
     private var currentProvider: SpeechPlaybackCoordinator.TTSProvider {
         SpeechPlaybackCoordinator.TTSProvider(rawValue: provider) ?? .elevenlabs
     }
-    
+
     // ElevenLabs voices - British & Scottish
     let elevenLabsVoices = ["ally", "dorothy", "lily", "alice", "dave", "joseph"]
-    
+
     // Google voices - British & Australian
     let googleVoices = ["george", "emma", "oliver", "sophia", "charlotte", "william", "jack", "olivia", "isla", "liam"]
 
     // Local on-device voices (pocket-tts)
     let localVoices = ["alba", "fantine", "cosette", "marius", "eponine", "azelma", "javert"]
-    
+
     private var availableVoices: [String] {
         switch currentProvider {
         case .elevenlabs:
@@ -2621,11 +2657,11 @@ struct SettingsTabView: View {
             return localVoices
         }
     }
-    
+
     private var trimmedElevenLabsApiKey: String {
         elevenLabsApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
     }
-    
+
     private var trimmedGoogleApiKey: String {
         googleApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -2669,13 +2705,13 @@ struct SettingsTabView: View {
             return "On-device Rust runtime • No API key • Bundled model or GitHub release download (~225MB)"
         }
     }
-    
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 // TTS PROVIDER
                 SettingsSectionHeader(title: "TTS Provider")
-                
+
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(spacing: 10) {
                         providerCard(
@@ -2708,7 +2744,7 @@ struct SettingsTabView: View {
                         .foregroundColor(.secondary)
                 }
                 .padding(.vertical, 10)
-                
+
                 if currentProvider == .local {
                     SettingsSectionHeader(title: "Local Model")
 
@@ -2776,16 +2812,16 @@ struct SettingsTabView: View {
                 } else {
                     // API KEY
                     SettingsSectionHeader(title: currentProvider == .elevenlabs ? "ElevenLabs API" : "Google Cloud API")
-                    
+
                     VStack(alignment: .leading, spacing: 12) {
                         if !hasApiKey {
-                            Text(currentProvider == .elevenlabs 
+                            Text(currentProvider == .elevenlabs
                                 ? "Add your ElevenLabs API key to start using PiTalk."
                                 : "Add your Google Cloud API key to start using PiTalk.")
                                 .font(.subheadline)
                                 .foregroundColor(.orange)
                         }
-                        
+
                         HStack(spacing: 8) {
                             Group {
                                 if showApiKey {
@@ -2802,14 +2838,14 @@ struct SettingsTabView: View {
                                 RoundedRectangle(cornerRadius: 6)
                                     .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
                             )
-                            
+
                             Button(showApiKey ? "Hide" : "Show") {
                                 showApiKey.toggle()
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
                         }
-                        
+
                         HStack(spacing: 12) {
                             Button("Import from ~/.env") {
                                 if currentProvider == .elevenlabs {
@@ -2820,20 +2856,20 @@ struct SettingsTabView: View {
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
-                            
-                            Text(currentProvider == .elevenlabs 
+
+                            Text(currentProvider == .elevenlabs
                                 ? "Looks for ELEVEN_API_KEY or ELEVENLABS_API_KEY"
                                 : "Looks for GOOGLE_TTS_API_KEY")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
-                        
+
                         if let envImportMessage {
                             Text(envImportMessage)
                                 .font(.caption)
                                 .foregroundStyle(envImportMessageColor)
                         }
-                        
+
                         HStack(spacing: 4) {
                             if hasApiKey {
                                 Image(systemName: "checkmark.circle.fill")
@@ -2846,7 +2882,7 @@ struct SettingsTabView: View {
                                 Image(systemName: "arrow.up.right")
                                     .foregroundColor(.orange)
                                     .font(.caption)
-                                Text(currentProvider == .elevenlabs 
+                                Text(currentProvider == .elevenlabs
                                     ? "Get your API key from elevenlabs.io"
                                     : "Get your API key from console.cloud.google.com")
                                     .font(.caption)
@@ -2856,10 +2892,10 @@ struct SettingsTabView: View {
                     }
                     .padding(.vertical, 10)
                 }
-                
+
                 // VOICE
                 SettingsSectionHeader(title: "Voice")
-                
+
                 SettingsRow("Voice", subtitle: currentProvider == .google ? voiceDescription(voice) : nil) {
                     HStack(spacing: 12) {
                         Picker("", selection: $voice) {
@@ -2869,7 +2905,7 @@ struct SettingsTabView: View {
                         }
                         .labelsHidden()
                         .frame(width: 120)
-                        
+
                         Button(isPreviewPlaying ? "Playing…" : "Preview") {
                             previewVoice(voice)
                         }
@@ -2878,10 +2914,10 @@ struct SettingsTabView: View {
                         .disabled(isPreviewPlaying || !hasApiKey || (currentProvider == .local && (!localRuntimeAvailable || !localModelInstalled)))
                     }
                 }
-                
+
                 // GENERAL
                 SettingsSectionHeader(title: "General")
-                
+
                 SettingsRow("Launch at Login") {
                     Toggle("", isOn: $launchAtLogin)
                         .labelsHidden()
@@ -2891,7 +2927,7 @@ struct SettingsTabView: View {
                             setLaunchAtLogin(enabled: newValue)
                         }
                 }
-                
+
                 SettingsRow("Show Dock Icon") {
                     Toggle("", isOn: $showDockIcon)
                         .labelsHidden()
@@ -2901,10 +2937,10 @@ struct SettingsTabView: View {
                             updateDockIcon()
                         }
                 }
-                
+
                 // SHORTCUTS
                 KeyboardShortcutsSettingsSection()
-                
+
                 Spacer(minLength: 20)
             }
             .padding(.horizontal, 20)
@@ -2916,7 +2952,7 @@ struct SettingsTabView: View {
         }
 
     }
-    
+
     @ViewBuilder
     private func providerCard(key: String,
                               title: String,
@@ -3029,7 +3065,7 @@ struct SettingsTabView: View {
         default: return ""
         }
     }
-    
+
     func updateDockIcon() {
         if let appDelegate = NSApp.delegate as? AppDelegate {
             appDelegate.updateDockIconVisibility()
@@ -3053,7 +3089,7 @@ struct SettingsTabView: View {
             envImportMessageColor = .secondary
         }
     }
-    
+
     func importGoogleApiKey() {
         switch GoogleApiKeyManager.importFromDotEnv(overwriteExisting: true) {
         case .imported:
@@ -3071,7 +3107,7 @@ struct SettingsTabView: View {
             envImportMessageColor = .secondary
         }
     }
-    
+
     func previewVoice(_ voiceName: String) {
         guard !isPreviewPlaying else { return }
 
@@ -3191,7 +3227,7 @@ struct SettingsTabView: View {
         guard abs(speed - 1.0) > 0.01 else { return nil }
         return String(format: "atempo=%.2f", speed)
     }
-    
+
     func previewElevenLabsVoice(voiceName: String, text: String, apiKey: String) async throws -> Data {
         let voiceIds: [String: String] = [
             "ally": "v2zbX16tJNtRIx8rSHDM",
@@ -3201,7 +3237,7 @@ struct SettingsTabView: View {
             "dave": "CYw3kZ02Hs0563khs1Fj",
             "joseph": "Zlb1dXrM653N07WRdFW3",
         ]
-        
+
         let voiceId = voiceIds[voiceName.lowercased()] ?? "v2zbX16tJNtRIx8rSHDM"
         let url = URL(string: "https://api.elevenlabs.io/v1/text-to-speech/\(voiceId)")!
         var request = URLRequest(url: url)
@@ -3209,7 +3245,7 @@ struct SettingsTabView: View {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
         request.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
-        
+
         let body: [String: Any] = [
             "text": text,
             "model_id": "eleven_monolingual_v1",
@@ -3219,16 +3255,16 @@ struct SettingsTabView: View {
             ]
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
+
         let (data, response) = try await URLSession.shared.data(for: request)
-        
+
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             throw NSError(domain: "PiTalk", code: 500, userInfo: [NSLocalizedDescriptionKey: "ElevenLabs API error"])
         }
-        
+
         return data
     }
-    
+
     func previewGoogleVoice(voiceName: String, text: String, apiKey: String) async throws -> Data {
         let googleVoices: [String: (voiceName: String, languageCode: String)] = [
             "george": ("en-GB-Studio-B", "en-GB"),
@@ -3242,13 +3278,13 @@ struct SettingsTabView: View {
             "isla": ("en-AU-Neural2-C", "en-AU"),
             "liam": ("en-AU-Neural2-D", "en-AU"),
         ]
-        
+
         let voiceConfig = googleVoices[voiceName.lowercased()] ?? ("en-GB-Studio-B", "en-GB")
         let url = URL(string: "https://texttospeech.googleapis.com/v1/text:synthesize?key=\(apiKey)")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
-        
+
         let body: [String: Any] = [
             "input": ["text": text],
             "voice": [
@@ -3262,22 +3298,22 @@ struct SettingsTabView: View {
             ]
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
+
         let (data, response) = try await URLSession.shared.data(for: request)
-        
+
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             throw NSError(domain: "PiTalk", code: 500, userInfo: [NSLocalizedDescriptionKey: "Google TTS API error"])
         }
-        
+
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let audioContentBase64 = json["audioContent"] as? String,
               let audioData = Data(base64Encoded: audioContentBase64) else {
             throw NSError(domain: "PiTalk", code: 500, userInfo: [NSLocalizedDescriptionKey: "Failed to decode Google response"])
         }
-        
+
         return audioData
     }
-    
+
     func setLaunchAtLogin(enabled: Bool) {
         if #available(macOS 13.0, *) {
             do {
@@ -3526,7 +3562,11 @@ struct HistoryView: View {
 
     private func normalizedSessionId(_ sessionId: String?) -> String? {
         let trimmed = sessionId?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (trimmed?.isEmpty == false) ? trimmed : nil
+        guard let value = trimmed, !value.isEmpty else { return nil }
+        if UUID(uuidString: value) != nil { return nil }
+        let hexDash = value.filter { $0.isHexDigit || $0 == "-" }
+        if hexDash.count > value.count / 2 && value.count > 8 { return nil }
+        return value
     }
 
     private func appFilterLabel(_ option: String) -> String {
@@ -3722,9 +3762,9 @@ struct HelpView: View {
 struct PermissionsView: View {
     @State private var microphoneStatus: PermissionsManager.PermissionStatus = .notDetermined
     @State private var accessibilityStatus: PermissionsManager.PermissionStatus = .notDetermined
-    
+
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
-    
+
     var body: some View {
         ScrollView {
             VStack(spacing: 24) {
@@ -3738,7 +3778,7 @@ struct PermissionsView: View {
                         .foregroundColor(.secondary)
                 }
                 .padding(.top, 8)
-                
+
                 // Permission rows
                 VStack(spacing: 12) {
                     PermissionRowView(
@@ -3759,7 +3799,7 @@ struct PermissionsView: View {
                             }
                         }
                     )
-                    
+
                     PermissionRowView(
                         title: "Accessibility",
                         description: "Needed for Jump feature to focus terminal windows",
@@ -3772,7 +3812,7 @@ struct PermissionsView: View {
                         }
                     )
                 }
-                
+
                 Spacer(minLength: 20)
             }
             .padding(.horizontal, 20)
@@ -3781,7 +3821,7 @@ struct PermissionsView: View {
         .onAppear { refreshStatus() }
         .onReceive(timer) { _ in refreshStatus() }
     }
-    
+
     private func refreshStatus() {
         microphoneStatus = PermissionsManager.checkMicrophone()
         accessibilityStatus = PermissionsManager.checkAccessibility()
@@ -3793,11 +3833,11 @@ struct PermissionRowView: View {
     let description: String
     let status: PermissionsManager.PermissionStatus
     let onRequest: () -> Void
-    
+
     private var isGranted: Bool {
         status == .granted
     }
-    
+
     var body: some View {
         HStack(spacing: 16) {
             // Status icon
@@ -3805,7 +3845,7 @@ struct PermissionRowView: View {
                 .font(.system(size: 18, weight: .medium))
                 .foregroundColor(isGranted ? .green : .secondary.opacity(0.5))
                 .frame(width: 24)
-            
+
             // Text
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
@@ -3814,9 +3854,9 @@ struct PermissionRowView: View {
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
             }
-            
+
             Spacer()
-            
+
             // Action button
             if !isGranted {
                 Button(status == .notDetermined ? "Allow" : "Open Settings") {
@@ -3862,7 +3902,7 @@ struct AboutView: View {
                     Text("About")
                         .font(.title2)
                         .fontWeight(.semibold)
-                    Text("PiTalk is a macOS menu bar voice companion for Pi. It reads Pi telemetry for live status and uses a local pi-talk extension to route <voice> output into the PiTalk speech queue.")
+                    Text("PiTalk is a macOS menu bar voice companion for Pi. The pi-talk extension sends real-time status events and routes <voice> output into the PiTalk speech queue.")
                         .font(.callout)
                         .foregroundColor(.secondary)
                 }
@@ -3875,9 +3915,7 @@ struct AboutView: View {
                         .foregroundColor(.secondary)
 
                     VStack(alignment: .leading, spacing: 4) {
-                        CodeRow(code: "pi install npm:pi-telemetry", description: "Telemetry data source")
-                        CodeRow(code: "/pi-telemetry --data", description: "Enable telemetry in active Pi session")
-                        CodeRow(code: "pi install npm:@swairshah/pi-talk", description: "PiTalk voice routing extension")
+                        CodeRow(code: "pi install npm:@swairshah/pi-talk", description: "Voice routing + status events")
                     }
                 }
                 .padding()
@@ -4059,7 +4097,7 @@ struct VoiceButton: View {
 final class HealthHTTPServer {
     private let listener: NWListener
     private let queue = DispatchQueue(label: "pitalk.health.server")
-    
+
     init(port: Int) throws {
         guard let nwPort = NWEndpoint.Port(rawValue: UInt16(port)) else {
             throw NSError(
@@ -4074,12 +4112,12 @@ final class HealthHTTPServer {
 
         self.listener = try NWListener(using: params, on: nwPort)
     }
-    
+
     func start() {
         listener.newConnectionHandler = { [weak self] connection in
             self?.handleConnection(connection)
         }
-        
+
         listener.stateUpdateHandler = { state in
             switch state {
             case .ready:
@@ -4090,44 +4128,44 @@ final class HealthHTTPServer {
                 break
             }
         }
-        
+
         listener.start(queue: queue)
     }
-    
+
     func stop() {
         listener.cancel()
     }
-    
+
     private func handleConnection(_ connection: NWConnection) {
         connection.start(queue: queue)
-        
+
         // Read HTTP request
         connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] data, _, _, error in
             guard error == nil, let data = data else {
                 connection.cancel()
                 return
             }
-            
+
             self?.handleRequest(data, on: connection)
         }
     }
-    
+
     private func handleRequest(_ data: Data, on connection: NWConnection) {
         guard let request = String(data: data, encoding: .utf8) else {
             connection.cancel()
             return
         }
-        
+
         // Parse HTTP request line
         let lines = request.components(separatedBy: "\r\n")
         guard let requestLine = lines.first else {
             connection.cancel()
             return
         }
-        
+
         let parts = requestLine.components(separatedBy: " ")
         let path = parts.count > 1 ? parts[1] : "/"
-        
+
         let response: String
         if path == "/health" || path == "/" {
             // Health check - return 200 OK with JSON
@@ -4152,7 +4190,7 @@ final class HealthHTTPServer {
             \(body)
             """
         }
-        
+
         connection.send(content: response.data(using: .utf8), completion: .contentProcessed { _ in
             connection.cancel()
         })

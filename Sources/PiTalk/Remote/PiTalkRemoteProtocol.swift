@@ -92,6 +92,8 @@ struct PiTalkRemoteSession: Codable, Equatable, Identifiable {
     let pid: Int?
     let activity: String
     let activityLabel: String
+    let statusDetail: String?
+    let project: String?
     let currentText: String?
     let queuedCount: Int
     let voice: String?
