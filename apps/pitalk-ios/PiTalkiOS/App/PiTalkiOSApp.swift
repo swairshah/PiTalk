@@ -165,20 +165,15 @@ private struct SessionsHomeView: View {
             HStack(spacing: 12) {
                 HStack(spacing: 8) {
                     Image("BrandIcon")
-                        .renderingMode(.template)
+                        .renderingMode(.original)
                         .resizable()
                         .scaledToFit()
-                        .frame(width: 24, height: 24)
-                        .foregroundStyle(PT.textPrimary)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("PiTalk")
-                            .font(.headline.weight(.bold))
-                            .foregroundStyle(PT.textPrimary)
-                        if let profile = store.activeProfile {
-                            Text(profile.displayName)
-                                .font(.caption2.weight(.medium))
-                                .foregroundStyle(PT.textSecondary)
-                        }
+                        .frame(width: 30, height: 30)
+                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    if let profile = store.activeProfile {
+                        Text(profile.displayName)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(PT.textSecondary)
                     }
                 }
                 Spacer()
