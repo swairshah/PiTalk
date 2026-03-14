@@ -101,6 +101,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             break
         }
 
+        switch DeepgramApiKeyManager.bootstrapPersistedKeyIfNeeded() {
+        case .importedFromEnvironment:
+            debugLog("PiTalk: Imported Deepgram TTS API key from process environment")
+        case .importedFromDotEnv:
+            debugLog("PiTalk: Imported Deepgram TTS API key from ~/.env")
+        case .alreadyConfigured, .notFound:
+            break
+        }
+
         // Menu bar is now handled by SwiftUI MenuBarExtra
         setupKeyboardShortcuts()
         updateDockIconVisibility()
@@ -745,6 +754,8 @@ final class SpeechPlaybackCoordinator {
             return SpeechPlaybackCoordinator.elevenLabsVoicePool
         case .google:
             return SpeechPlaybackCoordinator.googleVoicePool
+        case .deepgram:
+            return SpeechPlaybackCoordinator.deepgramVoicePool
         case .local:
             return SpeechPlaybackCoordinator.localVoicePool
         }
@@ -1092,12 +1103,14 @@ final class SpeechPlaybackCoordinator {
     enum TTSProvider: String, CaseIterable {
         case elevenlabs = "elevenlabs"
         case google = "google"
+        case deepgram = "deepgram"
         case local = "local"
 
         var displayName: String {
             switch self {
             case .elevenlabs: return "ElevenLabs"
             case .google: return "Google Cloud"
+            case .deepgram: return "Deepgram"
             case .local: return "Local"
             }
         }
@@ -1140,8 +1153,24 @@ final class SpeechPlaybackCoordinator {
         "liam": ("en-AU-Neural2-D", "en-AU"),       // Australian male
     ]
 
+    // Deepgram TTS voices - British, Australian, and Irish accents only
+    // Format: display name -> model ID
+    private static let deepgramVoices: [String: String] = [
+        // British
+        "draco": "aura-2-draco-en",
+        "pandora": "aura-2-pandora-en",
+
+        // Australian
+        "hyperion": "aura-2-hyperion-en",
+        "theia": "aura-2-theia-en",
+
+        // Irish
+        "angus": "aura-angus-en",
+    ]
+
     static let googleVoicePool = ["george", "emma", "oliver", "sophia", "jack", "olivia"]
     static let elevenLabsVoicePool = ["ally", "dorothy", "lily", "alice", "dave", "joseph"]
+    static let deepgramVoicePool = ["draco", "pandora", "hyperion", "theia", "angus"]
     static let localVoicePool = ["alba", "fantine", "cosette", "marius", "eponine", "azelma", "javert"]
 
     private func synthesize(job: SpeechJob) async throws -> Data {
@@ -1150,6 +1179,8 @@ final class SpeechPlaybackCoordinator {
             return try await synthesizeWithElevenLabs(job: job)
         case .google:
             return try await synthesizeWithGoogle(job: job)
+        case .deepgram:
+            return try await synthesizeWithDeepgram(job: job)
         case .local:
             return try await synthesizeWithLocal(job: job)
         }
@@ -1280,6 +1311,48 @@ final class SpeechPlaybackCoordinator {
         return audioData
     }
 
+    private func synthesizeWithDeepgram(job: SpeechJob) async throws -> Data {
+        guard let apiKey = DeepgramApiKeyManager.resolvedKey(), !apiKey.isEmpty else {
+            throw NSError(domain: "PiTalk", code: 401, userInfo: [
+                NSLocalizedDescriptionKey: "Deepgram API key not found. Add it in settings or import it from ~/.env."
+            ])
+        }
+
+        // Map voice name to Deepgram model ID (default to British Draco)
+        let model = Self.deepgramVoices[job.voice.lowercased()] ?? Self.deepgramVoices["draco"] ?? "aura-2-draco-en"
+
+        var components = URLComponents(string: "https://api.deepgram.com/v1/speak")!
+        components.queryItems = [
+            URLQueryItem(name: "model", value: model)
+        ]
+
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
+        request.setValue("Token \(apiKey)", forHTTPHeaderField: "Authorization")
+
+        let body: [String: Any] = [
+            "text": job.text
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw NSError(domain: "PiTalk", code: 500, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
+        }
+
+        guard httpResponse.statusCode == 200 else {
+            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
+            throw NSError(domain: "PiTalk", code: httpResponse.statusCode, userInfo: [
+                NSLocalizedDescriptionKey: "Deepgram TTS API error (\(httpResponse.statusCode)): \(errorMessage)"
+            ])
+        }
+
+        return data
+    }
+
     private func synthesizeWithLocal(job: SpeechJob) async throws -> Data {
         guard LocalTTSRuntime.shared.isModelInstalled() else {
             throw NSError(domain: "PiTalk", code: 503, userInfo: [
@@ -1337,6 +1410,9 @@ final class SpeechPlaybackCoordinator {
         case .google:
             // Google doesn't have a simple REST streaming API, so use non-streaming
             try await synthesizeAndPlayGoogle(job: job, runNonce: runNonce)
+        case .deepgram:
+            // Deepgram returns audio data over HTTP; current implementation buffers then plays.
+            try await synthesizeAndPlayDeepgram(job: job, runNonce: runNonce)
         case .local:
             do {
                 try await synthesizeAndPlayStreamingLocal(job: job, runNonce: runNonce)
@@ -1404,6 +1480,64 @@ final class SpeechPlaybackCoordinator {
         }
 
         // Wait for ffplay to finish
+        await withCheckedContinuation { continuation in
+            process.terminationHandler = { _ in
+                continuation.resume()
+            }
+        }
+
+        streamEnded = true
+        emitAudioMirrorEnd(streamId: streamId, status: "completed")
+    }
+
+    /// Deepgram TTS - buffered playback via REST API response.
+    private func synthesizeAndPlayDeepgram(job: SpeechJob, runNonce: UUID) async throws {
+        guard let ffplayPath = findFFPlayPath() else {
+            throw NSError(domain: "PiTalk", code: 404, userInfo: [
+                NSLocalizedDescriptionKey: "ffplay not found. Install with: brew install ffmpeg"
+            ])
+        }
+
+        let streamId = emitAudioMirrorStart(job: job, runNonce: runNonce)
+        var streamEnded = false
+        defer {
+            if !streamEnded {
+                emitAudioMirrorEnd(streamId: streamId, status: "failed")
+            }
+        }
+
+        let audioData = try await synthesizeWithDeepgram(job: job)
+        emitAudioMirrorChunk(streamId: streamId, data: audioData)
+
+        if !shouldContinue(runNonce: runNonce) {
+            streamEnded = true
+            emitAudioMirrorEnd(streamId: streamId, status: "interrupted")
+            return
+        }
+
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pitalk-deepgram-\(UUID().uuidString).mp3")
+        try audioData.write(to: tempURL)
+
+        defer {
+            try? FileManager.default.removeItem(at: tempURL)
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: ffplayPath)
+        process.arguments = [
+            "-nodisp",
+            "-autoexit",
+            "-loglevel", "quiet",
+            tempURL.path
+        ]
+
+        try process.run()
+
+        queue.sync {
+            self.currentProcess = process
+        }
+
         await withCheckedContinuation { continuation in
             process.terminationHandler = { _ in
                 continuation.resume()
@@ -2623,6 +2757,7 @@ struct SettingsTabView: View {
     @AppStorage("ttsVoice") var voice = "ally"
     @AppStorage("elevenLabsApiKey") var elevenLabsApiKey = ""
     @AppStorage("googleTtsApiKey") var googleApiKey = ""
+    @AppStorage("deepgramApiKey") var deepgramApiKey = ""
     @AppStorage("launchAtLogin") var launchAtLogin = false
     @AppStorage("showDockIcon") var showDockIcon = true
     @State private var isPreviewPlaying = false
@@ -2644,6 +2779,9 @@ struct SettingsTabView: View {
     // Google voices - British & Australian
     let googleVoices = ["george", "emma", "oliver", "sophia", "charlotte", "william", "jack", "olivia", "isla", "liam"]
 
+    // Deepgram voices - British, Australian, and Irish
+    let deepgramVoices = ["draco", "pandora", "hyperion", "theia", "angus"]
+
     // Local on-device voices (pocket-tts)
     let localVoices = ["alba", "fantine", "cosette", "marius", "eponine", "azelma", "javert"]
 
@@ -2653,6 +2791,8 @@ struct SettingsTabView: View {
             return elevenLabsVoices
         case .google:
             return googleVoices
+        case .deepgram:
+            return deepgramVoices
         case .local:
             return localVoices
         }
@@ -2666,6 +2806,10 @@ struct SettingsTabView: View {
         googleApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private var trimmedDeepgramApiKey: String {
+        deepgramApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private var effectiveApiKey: String? {
         switch currentProvider {
         case .elevenlabs:
@@ -2674,6 +2818,9 @@ struct SettingsTabView: View {
         case .google:
             if !trimmedGoogleApiKey.isEmpty { return trimmedGoogleApiKey }
             return GoogleApiKeyManager.resolvedKey()
+        case .deepgram:
+            if !trimmedDeepgramApiKey.isEmpty { return trimmedDeepgramApiKey }
+            return DeepgramApiKeyManager.resolvedKey()
         case .local:
             return nil
         }
@@ -2691,6 +2838,10 @@ struct SettingsTabView: View {
         !trimmedGoogleApiKey.isEmpty || !(GoogleApiKeyManager.resolvedKey()?.isEmpty ?? true)
     }
 
+    private var hasDeepgramApiKey: Bool {
+        !trimmedDeepgramApiKey.isEmpty || !(DeepgramApiKeyManager.resolvedKey()?.isEmpty ?? true)
+    }
+
     private var localRuntimeAvailable: Bool {
         LocalTTSRuntime.shared.isRuntimeAvailable()
     }
@@ -2698,11 +2849,62 @@ struct SettingsTabView: View {
     private var providerSummary: String {
         switch currentProvider {
         case .elevenlabs:
-            return "Scottish & British accents • Streaming support • Best quality"
+            return "Streaming support • Best quality"
         case .google:
-            return "British & Australian accents • No streaming • Good quality"
+            return "No streaming • Good quality"
+        case .deepgram:
+            return "Cloud API • Fast quality"
         case .local:
             return "On-device Rust runtime • No API key • Bundled model or GitHub release download (~225MB)"
+        }
+    }
+
+    private var apiSectionTitle: String {
+        switch currentProvider {
+        case .elevenlabs: return "ElevenLabs API"
+        case .google: return "Google Cloud API"
+        case .deepgram: return "Deepgram API"
+        case .local: return "API"
+        }
+    }
+
+    private var apiKeyPlaceholderMessage: String {
+        switch currentProvider {
+        case .elevenlabs: return "Add your ElevenLabs API key to start using PiTalk."
+        case .google: return "Add your Google Cloud API key to start using PiTalk."
+        case .deepgram: return "Add your Deepgram API key to start using PiTalk."
+        case .local: return ""
+        }
+    }
+
+    private var apiKeyEnvHint: String {
+        switch currentProvider {
+        case .elevenlabs: return "Looks for ELEVEN_API_KEY or ELEVENLABS_API_KEY"
+        case .google: return "Looks for GOOGLE_TTS_API_KEY"
+        case .deepgram: return "Looks for DEEPGRAM_API_KEY or DEEPGRAM_TTS_API_KEY"
+        case .local: return ""
+        }
+    }
+
+    private var apiKeySourceHint: String {
+        switch currentProvider {
+        case .elevenlabs: return "Get your API key from elevenlabs.io"
+        case .google: return "Get your API key from console.cloud.google.com"
+        case .deepgram: return "Get your API key from deepgram.com"
+        case .local: return ""
+        }
+    }
+
+    private var currentApiKeyBinding: Binding<String> {
+        switch currentProvider {
+        case .elevenlabs:
+            return $elevenLabsApiKey
+        case .google:
+            return $googleApiKey
+        case .deepgram:
+            return $deepgramApiKey
+        case .local:
+            return .constant("")
         }
     }
 
@@ -2728,6 +2930,14 @@ struct SettingsTabView: View {
                             subtitle: "Cloud API",
                             status: hasGoogleApiKey ? "API key ready" : "API key needed",
                             statusColor: hasGoogleApiKey ? .green : .orange
+                        )
+
+                        providerCard(
+                            key: "deepgram",
+                            title: "Deepgram",
+                            subtitle: "Cloud API",
+                            status: hasDeepgramApiKey ? "API key ready" : "API key needed",
+                            statusColor: hasDeepgramApiKey ? .green : .orange
                         )
 
                         providerCard(
@@ -2811,13 +3021,11 @@ struct SettingsTabView: View {
                     .padding(.vertical, 10)
                 } else {
                     // API KEY
-                    SettingsSectionHeader(title: currentProvider == .elevenlabs ? "ElevenLabs API" : "Google Cloud API")
+                    SettingsSectionHeader(title: apiSectionTitle)
 
                     VStack(alignment: .leading, spacing: 12) {
                         if !hasApiKey {
-                            Text(currentProvider == .elevenlabs
-                                ? "Add your ElevenLabs API key to start using PiTalk."
-                                : "Add your Google Cloud API key to start using PiTalk.")
+                            Text(apiKeyPlaceholderMessage)
                                 .font(.subheadline)
                                 .foregroundColor(.orange)
                         }
@@ -2825,9 +3033,9 @@ struct SettingsTabView: View {
                         HStack(spacing: 8) {
                             Group {
                                 if showApiKey {
-                                    TextField("API Key", text: currentProvider == .elevenlabs ? $elevenLabsApiKey : $googleApiKey)
+                                    TextField("API Key", text: currentApiKeyBinding)
                                 } else {
-                                    SecureField("API Key", text: currentProvider == .elevenlabs ? $elevenLabsApiKey : $googleApiKey)
+                                    SecureField("API Key", text: currentApiKeyBinding)
                                 }
                             }
                             .textFieldStyle(.plain)
@@ -2848,18 +3056,21 @@ struct SettingsTabView: View {
 
                         HStack(spacing: 12) {
                             Button("Import from ~/.env") {
-                                if currentProvider == .elevenlabs {
+                                switch currentProvider {
+                                case .elevenlabs:
                                     importElevenLabsApiKey()
-                                } else {
+                                case .google:
                                     importGoogleApiKey()
+                                case .deepgram:
+                                    importDeepgramApiKey()
+                                case .local:
+                                    break
                                 }
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
 
-                            Text(currentProvider == .elevenlabs
-                                ? "Looks for ELEVEN_API_KEY or ELEVENLABS_API_KEY"
-                                : "Looks for GOOGLE_TTS_API_KEY")
+                            Text(apiKeyEnvHint)
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -2882,9 +3093,7 @@ struct SettingsTabView: View {
                                 Image(systemName: "arrow.up.right")
                                     .foregroundColor(.orange)
                                     .font(.caption)
-                                Text(currentProvider == .elevenlabs
-                                    ? "Get your API key from elevenlabs.io"
-                                    : "Get your API key from console.cloud.google.com")
+                                Text(apiKeySourceHint)
                                     .font(.caption)
                                     .foregroundColor(.orange)
                             }
@@ -2896,7 +3105,7 @@ struct SettingsTabView: View {
                 // VOICE
                 SettingsSectionHeader(title: "Voice")
 
-                SettingsRow("Voice", subtitle: currentProvider == .google ? voiceDescription(voice) : nil) {
+                SettingsRow("Voice", subtitle: currentProvider == .local ? nil : voiceDescription(voice)) {
                     HStack(spacing: 12) {
                         Picker("", selection: $voice) {
                             ForEach(availableVoices, id: \.self) { v in
@@ -2965,7 +3174,9 @@ struct SettingsTabView: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .firstTextBaseline) {
                     Text(title)
-                        .font(.headline)
+                        .font(.subheadline.weight(.bold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                     Spacer()
                     if provider == key {
                         Image(systemName: "checkmark")
@@ -2983,7 +3194,8 @@ struct SettingsTabView: View {
                     .foregroundColor(statusColor)
             }
             .padding(12)
-            .frame(maxWidth: .infinity, minHeight: 86, alignment: .topLeading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .frame(height: 90)
             .background(
                 RoundedRectangle(cornerRadius: 12)
                     .fill(Color(NSColor.controlBackgroundColor))
@@ -3003,6 +3215,8 @@ struct SettingsTabView: View {
             voice = "ally"
         } else if newValue == "google" && !googleVoices.contains(voice) {
             voice = "george"
+        } else if newValue == "deepgram" && !deepgramVoices.contains(voice) {
+            voice = "draco"
         } else if newValue == "local" && !localVoices.contains(voice) {
             voice = "alba"
         }
@@ -3062,6 +3276,11 @@ struct SettingsTabView: View {
         case "olivia": return "Australian female (Neural2)"
         case "isla": return "Australian female (Neural2)"
         case "liam": return "Australian male (Neural2)"
+        case "draco": return "British male (Aura-2)"
+        case "pandora": return "British female (Aura-2)"
+        case "hyperion": return "Australian male (Aura-2)"
+        case "theia": return "Australian female (Aura-2)"
+        case "angus": return "Irish male (Aura)"
         default: return ""
         }
     }
@@ -3108,10 +3327,29 @@ struct SettingsTabView: View {
         }
     }
 
+    func importDeepgramApiKey() {
+        switch DeepgramApiKeyManager.importFromDotEnv(overwriteExisting: true) {
+        case .imported:
+            deepgramApiKey = UserDefaults.standard.string(forKey: DeepgramApiKeyManager.userDefaultsKey) ?? deepgramApiKey
+            envImportMessage = "Imported API key from ~/.env"
+            envImportMessageColor = .green
+        case .missingFile:
+            envImportMessage = "No ~/.env file found"
+            envImportMessageColor = .orange
+        case .keyNotFound:
+            envImportMessage = "No DEEPGRAM_API_KEY or DEEPGRAM_TTS_API_KEY found in ~/.env"
+            envImportMessageColor = .orange
+        case .skippedExisting:
+            envImportMessage = "API key already configured"
+            envImportMessageColor = .secondary
+        }
+    }
+
     func previewVoice(_ voiceName: String) {
         guard !isPreviewPlaying else { return }
 
         if currentProvider != .local {
+            let providerForPreview = currentProvider
             guard let apiKey = effectiveApiKey, !apiKey.isEmpty else { return }
             isPreviewPlaying = true
 
@@ -3122,12 +3360,21 @@ struct SettingsTabView: View {
                     let audioData: Data
                     let fileExtension: String
 
-                    if currentProvider == .elevenlabs {
+                    switch providerForPreview {
+                    case .elevenlabs:
                         audioData = try await previewElevenLabsVoice(voiceName: voiceName, text: text, apiKey: apiKey)
                         fileExtension = "mp3"
-                    } else {
+                    case .google:
                         audioData = try await previewGoogleVoice(voiceName: voiceName, text: text, apiKey: apiKey)
                         fileExtension = "mp3"
+                    case .deepgram:
+                        audioData = try await previewDeepgramVoice(voiceName: voiceName, text: text, apiKey: apiKey)
+                        fileExtension = "mp3"
+                    case .local:
+                        await MainActor.run {
+                            isPreviewPlaying = false
+                        }
+                        return
                     }
 
                     let tempFile = FileManager.default.temporaryDirectory
@@ -3312,6 +3559,43 @@ struct SettingsTabView: View {
         }
 
         return audioData
+    }
+
+    func previewDeepgramVoice(voiceName: String, text: String, apiKey: String) async throws -> Data {
+        let deepgramVoices: [String: String] = [
+            "draco": "aura-2-draco-en",
+            "pandora": "aura-2-pandora-en",
+            "hyperion": "aura-2-hyperion-en",
+            "theia": "aura-2-theia-en",
+            "angus": "aura-angus-en",
+        ]
+
+        let model = deepgramVoices[voiceName.lowercased()] ?? "aura-2-draco-en"
+
+        var components = URLComponents(string: "https://api.deepgram.com/v1/speak")!
+        components.queryItems = [
+            URLQueryItem(name: "model", value: model)
+        ]
+
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
+        request.setValue("Token \(apiKey)", forHTTPHeaderField: "Authorization")
+
+        let body: [String: Any] = [
+            "text": text
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            let message = String(data: data, encoding: .utf8) ?? "Deepgram TTS API error"
+            throw NSError(domain: "PiTalk", code: 500, userInfo: [NSLocalizedDescriptionKey: message])
+        }
+
+        return data
     }
 
     func setLaunchAtLogin(enabled: Bool) {
