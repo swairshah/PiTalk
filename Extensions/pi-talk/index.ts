@@ -560,6 +560,24 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("message_start", async (event, ctx) => {
+    if (event.message.role === "user") {
+      // User sent a new message — clear queued/playing speech for this session.
+      // Send both projectName (new key) and currentSessionId (legacy key) for compatibility.
+      if (!serverReady) {
+        await checkServer();
+      }
+      if (serverReady) {
+        const stopSessionIds = Array.from(new Set([
+          projectName,
+          currentSessionId,
+        ].filter((s): s is string => !!s && s.trim().length > 0)));
+
+        for (const sid of stopSessionIds) {
+          sendBrokerCommand({ type: "stop", sourceApp: "pi", sessionId: sid }).catch(() => {});
+        }
+      }
+    }
+
     if (event.message.role === "assistant") {
       resetStreamingState();
       // Re-check server in case it was started/stopped
