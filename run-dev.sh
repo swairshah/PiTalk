@@ -3,8 +3,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-APP_PATH=".build/PiTalk.app"
+BASE_APP_PATH=".build/PiTalk.app"
+APP_PATH=".build/PiTalkDev.app"
 APP_BIN="$APP_PATH/Contents/MacOS/PiTalk"
+RUN_BIN="$APP_BIN"
 
 # Colors
 RED='\033[0;31m'
@@ -54,16 +56,29 @@ sleep 0.5
 echo -e "${YELLOW}Building...${NC}"
 swift build
 
-# Ensure app bundle exists
-if [ ! -d "$APP_PATH" ]; then
-    echo -e "${YELLOW}Creating app bundle...${NC}"
+# Ensure base app bundle exists (used as template for a writable dev app)
+if [ ! -d "$BASE_APP_PATH" ]; then
+    echo -e "${YELLOW}Creating base app bundle...${NC}"
     ./scripts/build-app.sh
 fi
 
+# Ensure writable dev app bundle exists
+if [ ! -d "$APP_PATH" ]; then
+    echo -e "${YELLOW}Creating writable dev app bundle...${NC}"
+    cp -R "$BASE_APP_PATH" "$APP_PATH"
+fi
+
 # Update binary in app bundle with debug build
+# On newer macOS versions this can fail with "Operation not permitted"
+# if Terminal lacks App Management permission for modifying .app bundles.
 echo -e "${YELLOW}Updating app bundle with debug build...${NC}"
-cp .build/debug/PiTalk "$APP_BIN"
-codesign --force --sign - "$APP_PATH"
+if cp .build/debug/PiTalk "$APP_BIN"; then
+    codesign --force --sign - "$APP_PATH"
+else
+    echo -e "${YELLOW}Warning: Could not update .app bundle (likely App Management permission).${NC}"
+    echo -e "${YELLOW}Falling back to running .build/debug/PiTalk directly.${NC}"
+    RUN_BIN=".build/debug/PiTalk"
+fi
 
 # Check for API key
 if [ -n "${ELEVENLABS_API_KEY:-}" ] || [ -n "${ELEVEN_API_KEY:-}" ]; then
@@ -72,9 +87,9 @@ else
     echo -e "${YELLOW}Note: No ElevenLabs API key found. Configure it in Settings.${NC}"
 fi
 
-# Run app bundle with debug logging enabled
-echo -e "${GREEN}Launching PiTalk (debug mode via app bundle)...${NC}"
-PITALK_DEBUG=1 "$APP_BIN" &
+# Run PiTalk with debug logging enabled
+echo -e "${GREEN}Launching PiTalk (debug mode)...${NC}"
+PITALK_DEBUG=1 "$RUN_BIN" &
 PID=$!
 
 sleep 1

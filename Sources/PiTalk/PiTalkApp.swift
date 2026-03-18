@@ -2151,10 +2151,12 @@ final class SpeechPlaybackCoordinator {
     private func resolveVoiceForQueueLocked(requestedVoice: String?, queueKey: String) -> String {
         let trimmedRequested = requestedVoice?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let requested = trimmedRequested, !requested.isEmpty {
+            debugLog("PiTalk: resolveVoice(\(queueKey)) = explicit '\(requested)'")
             return requested
         }
 
         if let assigned = autoVoiceByQueueKey[queueKey] {
+            debugLog("PiTalk: resolveVoice(\(queueKey)) = cached '\(assigned)'")
             return assigned
         }
 
@@ -2165,16 +2167,19 @@ final class SpeechPlaybackCoordinator {
 
         if let freeVoice = autoVoicePool.first(where: { !usedVoices.contains($0) }) {
             autoVoiceByQueueKey[queueKey] = freeVoice
+            debugLog("PiTalk: resolveVoice(\(queueKey)) = new free '\(freeVoice)' (used=\(usedVoices))")
             return freeVoice
         }
 
         guard !autoVoicePool.isEmpty else {
+            debugLog("PiTalk: resolveVoice(\(queueKey)) = default (empty pool)")
             return defaultVoiceProvider()
         }
 
         let cycled = autoVoicePool[autoVoiceCycleIndex % autoVoicePool.count]
         autoVoiceCycleIndex += 1
         autoVoiceByQueueKey[queueKey] = cycled
+        debugLog("PiTalk: resolveVoice(\(queueKey)) = cycled '\(cycled)' (all voices used)")
         return cycled
     }
 
