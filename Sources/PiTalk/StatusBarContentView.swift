@@ -297,9 +297,17 @@ struct StatusBarContentView: View {
                 
                 // Metadata line: PID · voice · queued · last time
                 HStack(spacing: 6) {
+                    Text(session.sourceApp)
+                        .font(.caption2)
+
                     if let pid = session.pid {
                         Text("PID \(pid)")
                             .font(.system(.caption2, design: .monospaced))
+                    }
+                    
+                    if let sid = session.sessionId, !looksLikeId(sid) {
+                        Text(String(sid.prefix(14)))
+                            .font(.caption2)
                     }
                     
                     if let voice = session.voice {

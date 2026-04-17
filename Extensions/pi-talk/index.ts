@@ -33,7 +33,7 @@ const INBOX_BASE_DIR = path.join(os.homedir(), ".pi", "agent", "pitalk-inbox");
 const TTS_PORT = 18080;
 const TTS_HOST = "127.0.0.1";
 const BROKER_PORT = 18081;
-const AVAILABLE_VOICES = ["auto", "alba", "marius", "javert", "fantine", "cosette", "eponine", "azelma"];
+const AVAILABLE_VOICES = ["auto", "fantine", "eponine", "cosette", "azelma", "alba"];
 
 // System prompt injection for voice tags - succinct style
 const VOICE_PROMPT_SUCCINCT = `
@@ -360,6 +360,11 @@ export default function (pi: ExtensionAPI) {
     return text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
   }
 
+  function activeSessionKey(): string {
+    const sid = currentSessionId?.trim();
+    return sid && sid.length > 0 ? sid : projectName;
+  }
+
   async function enqueueSpeech(text: string) {
     if (!text.trim()) return;
 
@@ -372,7 +377,7 @@ export default function (pi: ExtensionAPI) {
         text,
         voice: currentVoice === "auto" ? undefined : currentVoice,
         sourceApp: "pi",
-        sessionId: projectName,
+        sessionId: activeSessionKey(),
         pid: process.pid,
       });
 
@@ -561,20 +566,16 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("message_start", async (event, ctx) => {
     if (event.message.role === "user") {
-      // User sent a new message — clear queued/playing speech for this session.
-      // Send both projectName (new key) and currentSessionId (legacy key) for compatibility.
+      // User sent a new message — clear queued/playing speech for the active Pi session only.
       if (!serverReady) {
         await checkServer();
       }
       if (serverReady) {
-        const stopSessionIds = Array.from(new Set([
-          projectName,
-          currentSessionId,
-        ].filter((s): s is string => !!s && s.trim().length > 0)));
-
-        for (const sid of stopSessionIds) {
-          sendBrokerCommand({ type: "stop", sourceApp: "pi", sessionId: sid }).catch(() => {});
-        }
+        sendBrokerCommand({
+          type: "stop",
+          sourceApp: "pi",
+          sessionId: activeSessionKey(),
+        }).catch(() => {});
       }
     }
 
@@ -775,7 +776,7 @@ export default function (pi: ExtensionAPI) {
     description: "Stop current speech",
     handler: async (_args, ctx) => {
       try {
-        await sendBrokerCommand({ type: "stop", sourceApp: "pi", sessionId: projectName });
+        await sendBrokerCommand({ type: "stop", sourceApp: "pi", sessionId: activeSessionKey() });
         ctx.ui.notify("Speech stopped", "info");
       } catch {
         ctx.ui.notify("Could not reach Loqui broker", "warning");

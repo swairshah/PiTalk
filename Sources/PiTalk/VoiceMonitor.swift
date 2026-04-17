@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import Combine
+import Darwin
 
 // MARK: - Voice Session Model
 
@@ -301,6 +302,7 @@ final class VoiceMonitor: ObservableObject {
         lastMessage = "Sending..."
         SendHandler.send(pid: pid, tty: nil, mux: nil, text: text) { [weak self] result in
             self?.lastMessage = result.message ?? (result.success ? "Sent" : "Failed")
+            self?.rebuild()
         }
     }
 
@@ -317,6 +319,7 @@ final class VoiceMonitor: ObservableObject {
 
         // Sessions from live agent status events
         for agent in agents {
+            guard Self.isPidAlive(agent.pid) else { continue }
             seenPids.insert(agent.pid)
             let cwdName = agent.cwd.map { URL(fileURLWithPath: $0).lastPathComponent }
 
@@ -378,6 +381,7 @@ final class VoiceMonitor: ObservableObject {
         for entry in entries {
             guard let pid = entry.pid, !seenPids.contains(pid) else { continue }
             guard entry.timestamp > recentCutoff else { continue }
+            guard Self.isPidAlive(pid) else { continue }
             voiceBuckets[pid, default: []].append(entry)
         }
 
@@ -389,7 +393,7 @@ final class VoiceMonitor: ObservableObject {
             let queuedEntries = pidEntries.filter { $0.status == .queued }
             let playedEntries = pidEntries.filter { $0.status == .played }
 
-            var activity: VoiceActivity = .idle
+            var activity: VoiceActivity = .waiting
             var currentText: String? = nil
 
             if playingEntry != nil {
@@ -398,12 +402,8 @@ final class VoiceMonitor: ObservableObject {
             } else if !queuedEntries.isEmpty {
                 activity = .queued
                 currentText = queuedEntries.first?.text
-            } else {
-                // Don't keep idle fallback-only sessions around for long.
-                let lastEventAt = pidEntries.max(by: { $0.timestamp < $1.timestamp })?.timestamp ?? .distantPast
-                if Date().timeIntervalSince(lastEventAt) > 45 {
-                    continue
-                }
+            } else if !Self.isPidAlive(pid) {
+                continue
             }
 
             // Get project name from process cwd
@@ -435,7 +435,7 @@ final class VoiceMonitor: ObservableObject {
             let project = cwd.map { URL(fileURLWithPath: $0).lastPathComponent }
             sessions.append(VoiceSession(
                 id: "pid-\(pid)",
-                sourceApp: "pi",
+                sourceApp: Self.sourceAppForPid(pid),
                 sessionId: nil,
                 pid: pid,
                 activity: .waiting,
@@ -552,8 +552,86 @@ final class VoiceMonitor: ObservableObject {
                now.timeIntervalSince(modified) > maxAge {
                 return nil
             }
+            guard Self.isPidAlive(pid) else { return nil }
             return pid
         }
+    }
+
+    private static let pidLivenessLock = NSLock()
+    private static var pidLivenessCache: [Int: (alive: Bool, updatedAt: Date)] = [:]
+    private static let pidLivenessTTL: TimeInterval = 5
+
+    private static func isPidAlive(_ pid: Int) -> Bool {
+        let now = Date()
+
+        pidLivenessLock.lock()
+        if let cached = pidLivenessCache[pid], now.timeIntervalSince(cached.updatedAt) < pidLivenessTTL {
+            pidLivenessLock.unlock()
+            return cached.alive
+        }
+        pidLivenessLock.unlock()
+
+        errno = 0
+        let result = kill(pid_t(pid), 0)
+        let alive = (result == 0) || (errno == EPERM)
+
+        pidLivenessLock.lock()
+        pidLivenessCache[pid] = (alive: alive, updatedAt: now)
+        pidLivenessLock.unlock()
+
+        return alive
+    }
+
+    private static let commandCacheLock = NSLock()
+    private static var commandCache: [Int: (command: String, updatedAt: Date)] = [:]
+    private static let commandCacheTTL: TimeInterval = 10
+
+    private static func commandForPid(_ pid: Int) -> String? {
+        let now = Date()
+
+        commandCacheLock.lock()
+        if let cached = commandCache[pid], now.timeIntervalSince(cached.updatedAt) < commandCacheTTL {
+            commandCacheLock.unlock()
+            return cached.command
+        }
+        commandCacheLock.unlock()
+
+        let pipe = Pipe()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-p", "\(pid)", "-o", "command="]
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let command = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let command, !command.isEmpty {
+                commandCacheLock.lock()
+                commandCache[pid] = (command: command, updatedAt: now)
+                commandCacheLock.unlock()
+                return command
+            }
+        } catch {}
+
+        commandCacheLock.lock()
+        commandCache.removeValue(forKey: pid)
+        commandCacheLock.unlock()
+        return nil
+    }
+
+    private static func sourceAppForPid(_ pid: Int) -> String {
+        guard let command = commandForPid(pid)?.lowercased() else { return "pi" }
+        if command.contains("claude") { return "claude-code" }
+        if command.contains("codex") { return "codex" }
+        if command.contains("gemini") { return "gemini" }
+        if command.contains("aider") { return "aider" }
+        if command.contains("cursor") { return "cursor" }
+        if command.hasPrefix("pi") || command.contains("/pi ") || command.contains(" pi ") { return "pi" }
+        return "pi"
     }
 
     private static let cwdCacheLock = NSLock()

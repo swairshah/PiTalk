@@ -191,3 +191,4 @@ echo ""
 
 APP_SIZE=$(du -sh "$APP_DIR" | cut -f1)
 echo "📦 App size: $APP_SIZE"
+

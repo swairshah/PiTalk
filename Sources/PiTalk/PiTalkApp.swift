@@ -81,6 +81,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Ignore SIGPIPE — writing to a closed socket/pipe must not crash the app.
+        signal(SIGPIPE, SIG_IGN)
+
         // Set shared instance for access from SwiftUI
         AppDelegate.shared = self
 
@@ -837,6 +840,15 @@ final class SpeechPlaybackCoordinator {
         }
     }
 
+    #if DEBUG
+    func assignAutoVoiceForQueueForTesting(sourceApp: String?, sessionId: String?) -> String {
+        let key = queueKey(sourceApp: sourceApp, sessionId: sessionId)
+        return queue.sync {
+            resolveVoiceForQueueLocked(requestedVoice: nil, queueKey: key)
+        }
+    }
+    #endif
+
     func stopAll() {
         debugLog("PiTalk: stopAll() called")
         let state = queue.sync { () -> (pending: [UUID], active: UUID?) in
@@ -1174,7 +1186,7 @@ final class SpeechPlaybackCoordinator {
     static let googleVoicePool = ["george", "emma", "oliver", "sophia", "jack", "olivia"]
     static let elevenLabsVoicePool = ["ally", "dorothy", "lily", "alice", "dave", "joseph"]
     static let deepgramVoicePool = ["draco", "pandora", "hyperion", "theia", "angus"]
-    static let localVoicePool = ["alba", "fantine", "cosette", "marius", "eponine", "azelma", "javert"]
+    static let localVoicePool = ["fantine", "eponine", "cosette", "azelma", "alba"]
 
     private func synthesize(job: SpeechJob) async throws -> Data {
         switch Self.currentProvider {
@@ -1414,7 +1426,7 @@ final class SpeechPlaybackCoordinator {
             // Google doesn't have a simple REST streaming API, so use non-streaming
             try await synthesizeAndPlayGoogle(job: job, runNonce: runNonce)
         case .deepgram:
-            // Deepgram returns audio data over HTTP; current implementation buffers then plays.
+            // Deepgram streams chunked MPEG over HTTP; play progressively via ffplay stdin.
             try await synthesizeAndPlayDeepgram(job: job, runNonce: runNonce)
         case .local:
             do {
@@ -1493,8 +1505,37 @@ final class SpeechPlaybackCoordinator {
         emitAudioMirrorEnd(streamId: streamId, status: "completed")
     }
 
-    /// Deepgram TTS - buffered playback via AVAudioPlayer (no ffplay needed).
+    /// Deepgram TTS - streaming playback via ffplay stdin.
     private func synthesizeAndPlayDeepgram(job: SpeechJob, runNonce: UUID) async throws {
+        guard let apiKey = DeepgramApiKeyManager.resolvedKey(), !apiKey.isEmpty else {
+            throw NSError(domain: "PiTalk", code: 401, userInfo: [
+                NSLocalizedDescriptionKey: "Deepgram API key not found. Add it in settings or import it from ~/.env."
+            ])
+        }
+
+        guard let ffplayPath = findFFPlayPath() else {
+            throw NSError(domain: "PiTalk", code: 404, userInfo: [
+                NSLocalizedDescriptionKey: "ffplay not found. Install with: brew install ffmpeg"
+            ])
+        }
+
+        // Map voice name to Deepgram model ID (default to British Draco)
+        let model = Self.deepgramVoices[job.voice.lowercased()] ?? Self.deepgramVoices["draco"] ?? "aura-2-draco-en"
+
+        var components = URLComponents(string: "https://api.deepgram.com/v1/speak")!
+        components.queryItems = [
+            URLQueryItem(name: "model", value: model),
+            URLQueryItem(name: "encoding", value: "mp3")
+        ]
+
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 60
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
+        request.setValue("Token \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["text": job.text])
+
         let streamId = emitAudioMirrorStart(job: job, runNonce: runNonce)
         var streamEnded = false
         defer {
@@ -1503,32 +1544,92 @@ final class SpeechPlaybackCoordinator {
             }
         }
 
-        let audioData = try await synthesizeWithDeepgram(job: job)
-        emitAudioMirrorChunk(streamId: streamId, data: audioData)
-
-        if !shouldContinue(runNonce: runNonce) {
-            streamEnded = true
-            emitAudioMirrorEnd(streamId: streamId, status: "interrupted")
-            return
+        let (asyncBytes, response) = try await URLSession.shared.bytes(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw NSError(domain: "PiTalk", code: 500, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
         }
 
-        let player = try AVAudioPlayer(data: audioData)
-        player.enableRate = true
-        player.rate = Float(configuredSpeechSpeed())
-        player.prepareToPlay()
+        guard httpResponse.statusCode == 200 else {
+            var errorData = Data()
+            for try await byte in asyncBytes {
+                errorData.append(byte)
+                if errorData.count > 1200 { break }
+            }
+            let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
+            throw NSError(domain: "PiTalk", code: httpResponse.statusCode, userInfo: [
+                NSLocalizedDescriptionKey: "Deepgram TTS API error (\(httpResponse.statusCode)): \(errorMessage)"
+            ])
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: ffplayPath)
+
+        let inputPipe = Pipe()
+        process.standardInput = inputPipe
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+
+        var arguments = [
+            "-nodisp",
+            "-autoexit",
+            "-loglevel", "quiet",
+        ]
+        if let tempoFilter = localPlaybackTempoFilter() {
+            arguments.append(contentsOf: ["-af", tempoFilter])
+        }
+        arguments.append("pipe:0")
+        process.arguments = arguments
+
+        try process.run()
 
         queue.sync {
-            self.currentAudioPlayer = player
+            self.currentProcess = process
         }
 
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            let delegate = AudioPlayerDelegate {
+        let stdinHandle = inputPipe.fileHandleForWriting
+        var buffer = Data()
+        let flushSize = 4096
+
+        for try await byte in asyncBytes {
+            if !shouldContinue(runNonce: runNonce) {
+                try? stdinHandle.close()
+                process.terminate()
+                streamEnded = true
+                emitAudioMirrorEnd(streamId: streamId, status: "interrupted")
+                return
+            }
+
+            buffer.append(byte)
+            if buffer.count >= flushSize {
+                do {
+                    try stdinHandle.write(contentsOf: buffer)
+                } catch {
+                    throw NSError(domain: "PiTalk", code: 500, userInfo: [
+                        NSLocalizedDescriptionKey: "ffplay stdin write failed: \(error.localizedDescription)"
+                    ])
+                }
+                emitAudioMirrorChunk(streamId: streamId, data: buffer)
+                buffer.removeAll(keepingCapacity: true)
+            }
+        }
+
+        if !buffer.isEmpty {
+            do {
+                try stdinHandle.write(contentsOf: buffer)
+            } catch {
+                throw NSError(domain: "PiTalk", code: 500, userInfo: [
+                    NSLocalizedDescriptionKey: "ffplay stdin tail write failed: \(error.localizedDescription)"
+                ])
+            }
+            emitAudioMirrorChunk(streamId: streamId, data: buffer)
+        }
+
+        try? stdinHandle.close()
+
+        await withCheckedContinuation { continuation in
+            process.terminationHandler = { _ in
                 continuation.resume()
             }
-            // Prevent delegate from being deallocated
-            objc_setAssociatedObject(player, "delegate", delegate, .OBJC_ASSOCIATION_RETAIN)
-            player.delegate = delegate
-            player.play()
         }
 
         streamEnded = true
@@ -2615,12 +2716,32 @@ struct SessionRowView: View {
 
                 // Metadata row
                 HStack(spacing: 12) {
+                    Label {
+                        Text(session.sourceApp)
+                            .font(.caption2)
+                    } icon: {
+                        Image(systemName: "terminal")
+                            .font(.system(size: 8))
+                    }
+                    .foregroundStyle(.tertiary)
+
                     if let pid = session.pid {
                         Label {
                             Text("\(pid)")
                                 .font(.system(.caption2, design: .monospaced))
                         } icon: {
                             Image(systemName: "number")
+                                .font(.system(size: 8))
+                        }
+                        .foregroundStyle(.tertiary)
+                    }
+
+                    if let sid = session.sessionId, looksReadable(sid) {
+                        Label {
+                            Text(String(sid.prefix(14)))
+                                .font(.caption2)
+                        } icon: {
+                            Image(systemName: "number.square")
                                 .font(.system(size: 8))
                         }
                         .foregroundStyle(.tertiary)
@@ -2783,7 +2904,7 @@ struct SettingsTabView: View {
     let deepgramVoices = ["draco", "pandora", "hyperion", "theia", "angus"]
 
     // Local on-device voices (pocket-tts)
-    let localVoices = ["alba", "fantine", "cosette", "marius", "eponine", "azelma", "javert"]
+    let localVoices = ["fantine", "eponine", "cosette", "azelma", "alba"]
 
     private var availableVoices: [String] {
         switch currentProvider {
@@ -3218,7 +3339,7 @@ struct SettingsTabView: View {
         } else if newValue == "deepgram" && !deepgramVoices.contains(voice) {
             voice = "draco"
         } else if newValue == "local" && !localVoices.contains(voice) {
-            voice = "alba"
+            voice = "fantine"
         }
 
         // Clear cached voice assignments so sessions get voices from the new provider's pool

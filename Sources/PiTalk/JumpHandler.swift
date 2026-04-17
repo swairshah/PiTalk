@@ -986,13 +986,13 @@ final class JumpHandler {
         }
         
         if candidates.count > 1 {
-            debugLog("Pass 4 — checking \(candidates.count) candidates for πid\(pid) via screen content")
+            debugLog("Pass 4 — checking \(candidates.count) candidates via screen content for pid=\(pid)")
             for (idx, candidate) in candidates.enumerated() {
                 debugLog("Pass 4 candidate \(idx): focusing \(candidate.id) name='\(candidate.name)'")
                 if focusGhosttyTerminal(id: candidate.id) {
                     Thread.sleep(forTimeInterval: 0.3) // Wait for terminal content to render
                     let found = ghosttyFocusedWindowContainsPID(pid)
-                    debugLog("Pass 4 candidate \(idx): focus OK, screen contains πid\(pid)? \(found)")
+                    debugLog("Pass 4 candidate \(idx): focus OK, marker found for pid=\(pid)? \(found)")
                     if found {
                         debugLog("Pass 4 MATCHED: \(candidate.id)")
                         return true
@@ -1001,7 +1001,7 @@ final class JumpHandler {
                     debugLog("Pass 4 candidate \(idx): focus FAILED")
                 }
             }
-            debugLog("Pass 4 — πid\(pid) not found in any candidate's screen content")
+            debugLog("Pass 4 — marker for pid=\(pid) not found in any candidate")
         } else {
             debugLog("Pass 4 skipped — candidates.count=\(candidates.count)")
         }
@@ -1010,10 +1010,37 @@ final class JumpHandler {
         return false
     }
     
+    /// Strict marker check to avoid false-positives from debug/log text.
+    /// Accept only likely live status markers (end-of-line or non-ASCII status glyphs).
+    private func containsLivePIDMarker(_ text: String, pid: Int) -> Bool {
+        let token = "πid\(pid) "
+        var start = text.startIndex
+
+        while let range = text.range(of: token, range: start..<text.endIndex) {
+            let lineEnd = text[range.upperBound...].firstIndex(of: "\n") ?? text.endIndex
+            let tail = text[range.upperBound..<lineEnd].trimmingCharacters(in: .whitespaces)
+
+            if tail.isEmpty {
+                return true
+            }
+
+            if let first = tail.unicodeScalars.first {
+                // In live Pi status lines, PID is usually followed by emoji/status glyphs.
+                // Reject ASCII continuations (e.g. "via screen content", "? false").
+                if first.value > 0x7F {
+                    return true
+                }
+            }
+
+            start = range.upperBound
+        }
+
+        return false
+    }
+
     /// Check if Ghostty's currently focused window contains the πid pattern in its screen content.
     /// Used to disambiguate when multiple terminals share the same CWD/title.
     private func ghosttyFocusedWindowContainsPID(_ pid: Int) -> Bool {
-        let searchPattern = "πid\(pid) "
         
         guard let ghosttyApp = NSWorkspace.shared.runningApplications.first(where: {
             $0.bundleIdentifier == "com.mitchellh.ghostty"
@@ -1063,8 +1090,9 @@ final class JumpHandler {
             let checkRange = value.count > 200 ? String(value.suffix(200)) : value
             let escapedCheck = checkRange.replacingOccurrences(of: "\n", with: "\\n")
             debugLog("  textArea[\(i)]: len=\(value.count), last200='\(escapedCheck)'")
-            debugLog("  textArea[\(i)]: contains '\(searchPattern)'? \(checkRange.contains(searchPattern))")
-            if checkRange.contains(searchPattern) {
+            let hasMarker = containsLivePIDMarker(checkRange, pid: pid)
+            debugLog("  textArea[\(i)]: marker found for pid=\(pid)? \(hasMarker)")
+            if hasMarker {
                 return true
             }
         }

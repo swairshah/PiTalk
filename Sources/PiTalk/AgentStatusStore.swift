@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// Notification posted when agent status changes.
 /// Observers should refresh their session state.
@@ -23,7 +24,11 @@ final class AgentStatusStore {
 
     private let lock = NSLock()
     private var agents: [Int: AgentStatus] = [:]  // keyed by pid
-    private let staleInterval: TimeInterval = 5 * 60  // 5 minutes — agents waiting for input don't send events
+    private let staleInterval: TimeInterval = 5 * 60  // 5 minutes
+
+    private static let livenessLock = NSLock()
+    private static var livenessCache: [Int: (alive: Bool, updatedAt: Date)] = [:]
+    private static let livenessTTL: TimeInterval = 5
 
     private init() {}
 
@@ -48,9 +53,63 @@ final class AgentStatusStore {
     func allAgents() -> [AgentStatus] {
         lock.lock()
         defer { lock.unlock() }
+
         let now = Date()
-        let staleKeys = agents.filter { now.timeIntervalSince($0.value.updatedAt) > staleInterval }.map(\.key)
-        for key in staleKeys { agents.removeValue(forKey: key) }
+        var deadKeys: [Int] = []
+        var waitingKeys: [Int] = []
+
+        for (pid, status) in agents {
+            guard now.timeIntervalSince(status.updatedAt) > staleInterval else { continue }
+
+            if Self.isPidAlive(pid) {
+                // If an agent stays quiet for a while but process is still alive,
+                // treat it as waiting rather than dropping/removing immediately.
+                if status.status != "done" {
+                    waitingKeys.append(pid)
+                }
+            } else {
+                deadKeys.append(pid)
+            }
+        }
+
+        for key in deadKeys {
+            agents.removeValue(forKey: key)
+        }
+
+        for key in waitingKeys {
+            guard let existing = agents[key] else { continue }
+            agents[key] = AgentStatus(
+                pid: existing.pid,
+                project: existing.project,
+                cwd: existing.cwd,
+                status: "done",
+                detail: nil,
+                contextPercent: existing.contextPercent,
+                updatedAt: existing.updatedAt
+            )
+        }
+
         return Array(agents.values)
+    }
+
+    private static func isPidAlive(_ pid: Int) -> Bool {
+        let now = Date()
+
+        livenessLock.lock()
+        if let cached = livenessCache[pid], now.timeIntervalSince(cached.updatedAt) < livenessTTL {
+            livenessLock.unlock()
+            return cached.alive
+        }
+        livenessLock.unlock()
+
+        errno = 0
+        let result = kill(pid_t(pid), 0)
+        let alive = (result == 0) || (errno == EPERM)
+
+        livenessLock.lock()
+        livenessCache[pid] = (alive: alive, updatedAt: now)
+        livenessLock.unlock()
+
+        return alive
     }
 }

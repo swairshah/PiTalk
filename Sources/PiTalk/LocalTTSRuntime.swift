@@ -210,8 +210,8 @@ final class LocalTTSRuntime {
             "serve",
             "--host", host,
             "--port", "\(port)",
-            "--voice", "alba",
-            "--prewarm-voices", "alba",
+            "--voice", "fantine",
+            "--prewarm-voices", "fantine",
             "--warmup", "true"
         ]
         if let cwd = prepareRuntimeWorkingDirectory() {
