@@ -14,6 +14,8 @@ final class AgentStatusStore {
 
     struct AgentStatus {
         let pid: Int
+        let sourceApp: String?
+        let sessionId: String?
         let project: String?
         let cwd: String?
         let status: String       // "starting", "thinking", "reading", "editing", "running", "searching", "done", "error"
@@ -32,10 +34,11 @@ final class AgentStatusStore {
 
     private init() {}
 
-    func update(pid: Int, project: String?, cwd: String?, status: String, detail: String?, contextPercent: Int?) {
+    func update(pid: Int, sourceApp: String?, sessionId: String?, project: String?, cwd: String?, status: String, detail: String?, contextPercent: Int?) {
         lock.lock()
         agents[pid] = AgentStatus(
-            pid: pid, project: project, cwd: cwd,
+            pid: pid, sourceApp: sourceApp, sessionId: sessionId,
+            project: project, cwd: cwd,
             status: status, detail: detail,
             contextPercent: contextPercent, updatedAt: Date()
         )
@@ -80,6 +83,8 @@ final class AgentStatusStore {
             guard let existing = agents[key] else { continue }
             agents[key] = AgentStatus(
                 pid: existing.pid,
+                sourceApp: existing.sourceApp,
+                sessionId: existing.sessionId,
                 project: existing.project,
                 cwd: existing.cwd,
                 status: "done",

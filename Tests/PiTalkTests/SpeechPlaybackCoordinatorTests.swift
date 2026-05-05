@@ -16,13 +16,19 @@ final class SpeechPlaybackCoordinatorTests: XCTestCase {
         let coordinator = SpeechPlaybackCoordinator(defaultVoiceProvider: { "fallback" })
 
         let expectedVoices = [
+            "vera",
+            "paul",
+            "charles",
+            "michael",
+            "anna",
             "fantine",
             "eponine",
             "cosette",
-            "azelma",
-            "alba",
-            "fantine",
-            "eponine",
+            "eve",
+            "george",
+            "mary",
+            "vera",
+            "paul",
         ]
 
         let assignedVoices = expectedVoices.indices.map { index in

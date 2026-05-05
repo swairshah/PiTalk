@@ -21,7 +21,10 @@ public class TTSClient {
         "george", "emma", "oliver", "sophia", "charlotte", "william",
         "jack", "olivia", "isla", "liam",
         "draco", "pandora", "hyperion", "theia", "angus",
-        "fantine", "eponine", "cosette", "azelma", "alba"
+        "alba", "vera", "paul", "charles", "michael", "anna",
+        "fantine", "eponine", "cosette", "eve", "mary",
+        "marius", "javert", "azelma", "caro_davy", "peter_yearsley",
+        "stuart_bell"
     ]
     
     /// Check if server is running

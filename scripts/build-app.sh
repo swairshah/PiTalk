@@ -5,7 +5,7 @@ set -e
 cd "$(dirname "$0")/.."
 
 # Version - update this for releases
-VERSION="1.2.1"
+VERSION="1.2.2"
 
 echo "🔨 Building PiTalk.app v$VERSION..."
 
@@ -191,4 +191,3 @@ echo ""
 
 APP_SIZE=$(du -sh "$APP_DIR" | cut -f1)
 echo "📦 App size: $APP_SIZE"
-

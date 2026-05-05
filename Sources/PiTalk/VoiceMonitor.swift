@@ -215,6 +215,8 @@ final class VoiceMonitor: ObservableObject {
         let agentInstances = agents.map { agent in
             AgentInstance(
                 pid: agent.pid,
+                sourceApp: agent.sourceApp,
+                sessionId: agent.sessionId,
                 cwd: agent.cwd,
                 activity: Self.mapStatus(agent.status),
                 detail: agent.detail,
@@ -253,6 +255,8 @@ final class VoiceMonitor: ObservableObject {
 
     private struct AgentInstance {
         let pid: Int
+        let sourceApp: String?
+        let sessionId: String?
         let cwd: String?
         let activity: VoiceActivity
         let detail: String?
@@ -325,8 +329,8 @@ final class VoiceMonitor: ObservableObject {
 
             var session = VoiceSession(
                 id: "pid-\(agent.pid)",
-                sourceApp: "pi",
-                sessionId: cwdName,
+                sourceApp: normalizedAppName(agent.sourceApp),
+                sessionId: normalizedSessionId(agent.sessionId) ?? cwdName,
                 pid: agent.pid,
                 activity: agent.activity,
                 statusDetail: agent.detail,
@@ -381,7 +385,10 @@ final class VoiceMonitor: ObservableObject {
         for entry in entries {
             guard let pid = entry.pid, !seenPids.contains(pid) else { continue }
             guard entry.timestamp > recentCutoff else { continue }
-            guard Self.isPidAlive(pid) else { continue }
+
+            // Keep active queue activity visible even if the originating pid has already exited.
+            // This can happen when external clients enqueue speech from short-lived processes.
+            if !Self.isPidAlive(pid) && !entry.status.isInQueue { continue }
             voiceBuckets[pid, default: []].append(entry)
         }
 
@@ -389,6 +396,7 @@ final class VoiceMonitor: ObservableObject {
             let key = "pid-\(pid)"
             guard !sessions.contains(where: { $0.id == key }) else { continue }
 
+            let pidAlive = Self.isPidAlive(pid)
             let playingEntry = pidEntries.first { $0.status == .playing }
             let queuedEntries = pidEntries.filter { $0.status == .queued }
             let playedEntries = pidEntries.filter { $0.status == .played }
@@ -402,18 +410,19 @@ final class VoiceMonitor: ObservableObject {
             } else if !queuedEntries.isEmpty {
                 activity = .queued
                 currentText = queuedEntries.first?.text
-            } else if !Self.isPidAlive(pid) {
+            } else if !pidAlive {
                 continue
             }
 
-            // Get project name from process cwd
-            let projectName = Self.cwdForPid(pid).map { URL(fileURLWithPath: $0).lastPathComponent }
+            // Get project name from process cwd only when pid is still alive.
+            let cwd = pidAlive ? Self.cwdForPid(pid) : nil
+            let projectName = cwd.map { URL(fileURLWithPath: $0).lastPathComponent }
 
             sessions.append(VoiceSession(
                 id: key,
                 sourceApp: normalizedAppName(pidEntries.first?.sourceApp),
                 sessionId: pidEntries.first?.sessionId,
-                pid: pid,
+                pid: pidAlive ? pid : nil,
                 activity: activity,
                 statusDetail: nil,
                 project: projectName,
@@ -422,11 +431,67 @@ final class VoiceMonitor: ObservableObject {
                 voice: pidEntries.compactMap { $0.voice }.first,
                 lastSpokenAt: playedEntries.max(by: { $0.timestamp < $1.timestamp })?.timestamp,
                 lastSpokenText: playedEntries.max(by: { $0.timestamp < $1.timestamp })?.text,
-                cwd: Self.cwdForPid(pid),
+                cwd: cwd,
                 tty: nil,
                 mux: nil
             ))
             seenPids.insert(pid)
+        }
+
+        // Fallback for speech history that has no usable pid.
+        // Group by sourceApp+sessionId so these sessions still appear in UI while queued/playing.
+        var historyBuckets: [String: [RequestHistoryEntry]] = [:]
+        for entry in entries {
+            guard entry.timestamp > recentCutoff else { continue }
+
+            if let pid = entry.pid {
+                if seenPids.contains(pid) { continue }
+                if Self.isPidAlive(pid) { continue }
+            }
+
+            let appSessionKey = Self.appSessionKey(sourceApp: entry.sourceApp, sessionId: entry.sessionId)
+            historyBuckets[appSessionKey, default: []].append(entry)
+        }
+
+        for (bucketKey, bucketEntries) in historyBuckets {
+            guard !sessions.contains(where: {
+                Self.appSessionKey(sourceApp: $0.sourceApp, sessionId: $0.sessionId) == bucketKey
+            }) else { continue }
+
+            let playingEntry = bucketEntries.first { $0.status == .playing }
+            let queuedEntries = bucketEntries.filter { $0.status == .queued }
+            let playedEntries = bucketEntries.filter { $0.status == .played }
+
+            var activity: VoiceActivity = .waiting
+            var currentText: String? = nil
+
+            if playingEntry != nil {
+                activity = .speaking
+                currentText = playingEntry?.text
+            } else if !queuedEntries.isEmpty {
+                activity = .queued
+                currentText = queuedEntries.first?.text
+            } else if playedEntries.isEmpty {
+                continue
+            }
+
+            sessions.append(VoiceSession(
+                id: "history-\(bucketKey)",
+                sourceApp: normalizedAppName(bucketEntries.first?.sourceApp),
+                sessionId: normalizedSessionId(bucketEntries.first?.sessionId),
+                pid: nil,
+                activity: activity,
+                statusDetail: nil,
+                project: nil,
+                currentText: currentText,
+                queuedCount: queuedEntries.count,
+                voice: bucketEntries.compactMap { $0.voice }.first,
+                lastSpokenAt: playedEntries.max(by: { $0.timestamp < $1.timestamp })?.timestamp,
+                lastSpokenText: playedEntries.max(by: { $0.timestamp < $1.timestamp })?.text,
+                cwd: nil,
+                tty: nil,
+                mux: nil
+            ))
         }
 
         // Final fallback: extension-owned inbox pids that are active but haven't emitted status/speech yet.
@@ -678,6 +743,17 @@ final class VoiceMonitor: ObservableObject {
     private static func normalizedAppName(_ sourceApp: String?) -> String {
         let trimmed = sourceApp?.trimmingCharacters(in: .whitespacesAndNewlines)
         return (trimmed?.isEmpty == false) ? trimmed! : "Unknown"
+    }
+
+    private static func normalizedSessionId(_ sessionId: String?) -> String? {
+        let trimmed = sessionId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (trimmed?.isEmpty == false) ? trimmed! : nil
+    }
+
+    private static func appSessionKey(sourceApp: String?, sessionId: String?) -> String {
+        let app = normalizedAppName(sourceApp)
+        let sid = normalizedSessionId(sessionId) ?? "__none__"
+        return "\(app)::\(sid)"
     }
 
 }

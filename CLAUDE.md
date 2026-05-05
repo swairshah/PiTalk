@@ -57,6 +57,7 @@ TypeScript npm package (`@swairshah/pi-talk`) for the Pi coding agent. Extracts 
 - `LSUIElement=true` — menu bar app, dock icon is toggleable
 - App bundle ID: `com.pitalk.app`
 - ElevenLabs voices: `ally` (default), `dorothy`, `lily`, `alice`, `dave`, `joseph` using `eleven_flash_v2_5` model
+- Local Pocket TTS voices: `alba`, `vera`, `paul`, `charles`, `michael`, `anna`, `fantine`, `eponine`, `cosette`, `eve`, `george`, `mary`, `marius`, `javert`, `azelma`, `caro_davy`, `peter_yearsley`, `stuart_bell`
 - Requires `ffplay` (ffmpeg) for audio playback and Accessibility permissions for terminal focusing
 
 ## Network Ports

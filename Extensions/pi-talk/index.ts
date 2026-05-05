@@ -33,7 +33,7 @@ const INBOX_BASE_DIR = path.join(os.homedir(), ".pi", "agent", "pitalk-inbox");
 const TTS_PORT = 18080;
 const TTS_HOST = "127.0.0.1";
 const BROKER_PORT = 18081;
-const AVAILABLE_VOICES = ["auto", "fantine", "eponine", "cosette", "azelma", "alba"];
+const AVAILABLE_VOICES = ["auto", "alba", "vera", "paul", "charles", "michael", "anna", "fantine", "eponine", "cosette", "eve", "george", "mary", "marius", "javert", "azelma", "caro_davy", "peter_yearsley", "stuart_bell"];
 
 // System prompt injection for voice tags - succinct style
 const VOICE_PROMPT_SUCCINCT = `

@@ -7,7 +7,7 @@ Text-to-speech extension for [Pi coding agent](https://github.com/mariozechner/p
 ## Features
 
 - **Local TTS** - No cloud APIs, runs entirely on your Mac
-- **Multiple voices** - 5 different voice options
+- **Multiple voices** - Multiple local voice options
 - **Central playback** - Pi sends speech jobs to Loqui's local broker queue
 - **Configurable** - Toggle verbosity, mute, change voices
 
@@ -37,7 +37,7 @@ Once installed, Pi will automatically speak `<voice>` tagged content in its resp
 |---------|-------------|
 | `/tts` | Toggle TTS on/off |
 | `/tts-mute` | Mute audio (keeps voice tags in responses) |
-| `/tts-voice <name>` | Change voice (fantine, eponine, cosette, azelma, alba) |
+| `/tts-voice <name>` | Change voice (alba, vera, paul, charles, michael, anna, fantine, eponine, cosette, eve, george, mary, marius, javert, azelma, caro_davy, peter_yearsley, stuart_bell) |
 | `/tts-style` | Toggle between succinct and verbose voice prompts |
 | `/tts-say <text>` | Speak arbitrary text |
 | `/tts-stop` | Stop current speech |

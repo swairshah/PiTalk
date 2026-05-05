@@ -18,6 +18,20 @@ final class LocalTTSRuntime {
     private let noCloneRepo = "models--kyutai--pocket-tts-without-voice-cloning"
     private let tokenizerRevision = "d4fdd22ae8c8e1cb3634e150ebeff1dab2d16df3"
     private let embeddingsRevision = "2578fed2380333b621689eaed6fe144cf69dfeb3"
+    private let builtInVoiceNames: Set<String> = ["alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma"]
+    private let hostedVoicePromptPaths: [String: String] = [
+        "anna": "vctk/p228_023_enhanced.wav",
+        "vera": "vctk/p229_023_enhanced.wav",
+        "paul": "vctk/p259_023_enhanced.wav",
+        "charles": "vctk/p254_023_enhanced.wav",
+        "michael": "vctk/p360_023_enhanced.wav",
+        "eve": "vctk/p361_023_enhanced.wav",
+        "george": "vctk/p315_023_enhanced.wav",
+        "mary": "vctk/p333_023_enhanced.wav",
+        "caro_davy": "voice-zero/caro_davy.wav",
+        "peter_yearsley": "voice-zero/peter_yearsley.wav",
+        "stuart_bell": "voice-zero/stuart_bell.wav"
+    ]
 
     // Model asset hosted alongside PiTalk DMG on GitHub Releases
     private let releaseOwner = "swairshah"
@@ -67,12 +81,13 @@ final class LocalTTSRuntime {
         downloadedModelsDirectory().path
     }
 
-    func downloadModelIfNeeded(preferredVoice _: String) async throws {
+    func downloadModelIfNeeded(preferredVoice: String) async throws {
         guard isRuntimeAvailable() else {
             throw RuntimeError.binaryNotFound
         }
 
         if hasCachedModelFiles() {
+            try await cacheHostedVoicePrompts(preferredVoice: preferredVoice)
             return
         }
 
@@ -80,6 +95,7 @@ final class LocalTTSRuntime {
         if hasBundledModelFiles() {
             setupBundledModelsCacheIfAvailable()
             if hasCachedModelFiles() {
+                try await cacheHostedVoicePrompts(preferredVoice: preferredVoice)
                 return
             }
         }
@@ -88,6 +104,7 @@ final class LocalTTSRuntime {
         if hasDownloadedModelFiles() {
             setupDownloadedModelsCacheIfAvailable()
             if hasCachedModelFiles() {
+                try await cacheHostedVoicePrompts(preferredVoice: preferredVoice)
                 return
             }
         }
@@ -104,6 +121,8 @@ final class LocalTTSRuntime {
         guard hasCachedModelFiles() else {
             throw RuntimeError.modelDownloadFailed("Downloaded model archive, but required files were not found after extraction")
         }
+
+        try await cacheHostedVoicePrompts(preferredVoice: preferredVoice)
     }
 
     func synthesize(text: String, voice: String) async throws -> Data {
@@ -112,6 +131,7 @@ final class LocalTTSRuntime {
         }
 
         try await ensureServerRunning()
+        let runtimeVoice = try await resolveVoiceForRuntime(voice)
 
         let url = URL(string: "http://\(host):\(port)/generate")!
         var request = URLRequest(url: url)
@@ -121,7 +141,7 @@ final class LocalTTSRuntime {
 
         let body: [String: Any] = [
             "text": text,
-            "voice": voice
+            "voice": runtimeVoice
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
@@ -144,6 +164,7 @@ final class LocalTTSRuntime {
         }
 
         try await ensureServerRunning()
+        let runtimeVoice = try await resolveVoiceForRuntime(voice)
 
         let url = URL(string: "http://\(host):\(port)/stream")!
         var request = URLRequest(url: url)
@@ -153,7 +174,7 @@ final class LocalTTSRuntime {
 
         let body: [String: Any] = [
             "text": text,
-            "voice": voice
+            "voice": runtimeVoice
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
@@ -335,6 +356,112 @@ final class LocalTTSRuntime {
         let downloaded = downloadedModelsDirectory()
         guard FileManager.default.fileExists(atPath: downloaded.path) else { return }
         seedCache(fromModelsRoot: downloaded)
+    }
+
+    private func cacheHostedVoicePrompts(preferredVoice: String) async throws {
+        for voice in hostedVoicePromptDownloadOrder(preferredVoice: preferredVoice) {
+            guard findVoicePrompt(named: voice) == nil,
+                  let remotePath = hostedVoicePromptPaths[voice] else {
+                continue
+            }
+            _ = try await downloadVoicePrompt(named: voice, remotePath: remotePath)
+        }
+    }
+
+    private func hostedVoicePromptDownloadOrder(preferredVoice: String) -> [String] {
+        let preferred = sanitizeVoiceName(preferredVoice)
+        var result: [String] = []
+
+        if hostedVoicePromptPaths[preferred] != nil {
+            result.append(preferred)
+        }
+
+        for voice in hostedVoicePromptPaths.keys.sorted() where !result.contains(voice) {
+            result.append(voice)
+        }
+
+        return result
+    }
+
+    private func resolveVoiceForRuntime(_ voice: String) async throws -> String {
+        let trimmed = voice.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "fantine" }
+
+        if isExternalVoiceReference(trimmed) {
+            return trimmed
+        }
+
+        let normalized = sanitizeVoiceName(trimmed)
+        guard !normalized.isEmpty else { return trimmed }
+
+        if builtInVoiceNames.contains(normalized) {
+            return normalized
+        }
+
+        if let existing = findVoicePrompt(named: normalized) {
+            return existing.path
+        }
+
+        if let remotePath = hostedVoicePromptPaths[normalized] {
+            return try await downloadVoicePrompt(named: normalized, remotePath: remotePath).path
+        }
+
+        throw RuntimeError.modelDownloadFailed("Voice '\(voice)' is not supported by the local Pocket TTS runtime.")
+    }
+
+    private func isExternalVoiceReference(_ voice: String) -> Bool {
+        voice.hasPrefix("/")
+            || voice.hasPrefix("~")
+            || voice.hasPrefix("file:")
+            || voice.hasPrefix("http:")
+            || voice.hasPrefix("https:")
+            || voice.hasPrefix("hf:")
+            || voice.hasPrefix("data:")
+    }
+
+    private func sanitizeVoiceName(_ voice: String) -> String {
+        String(voice.lowercased().filter { $0.isLetter || $0.isNumber || $0 == "_" })
+    }
+
+    private func findVoicePrompt(named voice: String) -> URL? {
+        let fileNames = ["\(voice).wav", "\(voice).safetensors"]
+        let fm = FileManager.default
+
+        for directory in voicePromptSearchDirectories() {
+            for fileName in fileNames {
+                let candidate = directory.appendingPathComponent(fileName)
+                if fm.fileExists(atPath: candidate.path) {
+                    return candidate
+                }
+            }
+        }
+
+        return nil
+    }
+
+    private func downloadVoicePrompt(named voice: String, remotePath: String) async throws -> URL {
+        guard let url = URL(string: "https://huggingface.co/kyutai/tts-voices/resolve/main/\(remotePath)") else {
+            throw RuntimeError.modelDownloadFailed("Invalid voice prompt URL for \(voice)")
+        }
+
+        let fm = FileManager.default
+        let destinationDir = downloadedModelsDirectory().appendingPathComponent("voices")
+        try fm.createDirectory(at: destinationDir, withIntermediateDirectories: true)
+
+        let destination = destinationDir.appendingPathComponent("\(voice).wav")
+        let (temporaryURL, response) = try await URLSession.shared.download(from: url)
+        defer { try? fm.removeItem(at: temporaryURL) }
+
+        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+            throw RuntimeError.modelDownloadFailed("Voice '\(voice)' is not available from Pocket TTS (HTTP \(http.statusCode))")
+        }
+
+        if fm.fileExists(atPath: destination.path) {
+            try fm.removeItem(at: destination)
+        }
+        try fm.moveItem(at: temporaryURL, to: destination)
+
+        return destination
     }
 
     private func seedCache(fromModelsRoot modelsRoot: URL) {
@@ -529,6 +656,32 @@ final class LocalTTSRuntime {
         }
 
         return nil
+    }
+
+    private func voicePromptSearchDirectories() -> [URL] {
+        var directories: [URL] = [
+            downloadedModelsDirectory().appendingPathComponent("voices"),
+            downloadedModelsDirectory().appendingPathComponent("embeddings")
+        ]
+
+        if let bundled = bundledModelsDirectory() {
+            directories.append(bundled.appendingPathComponent("embeddings"))
+        }
+
+        directories.append(
+            modelCacheDirectory()
+                .appendingPathComponent("hub")
+                .appendingPathComponent(noCloneRepo)
+                .appendingPathComponent("snapshots")
+                .appendingPathComponent(embeddingsRevision)
+                .appendingPathComponent("embeddings")
+        )
+
+        directories.append(
+            downloadedModelsDirectory().appendingPathComponent("voice-states")
+        )
+
+        return directories
     }
 
     private func hasCachedModelFiles() -> Bool {

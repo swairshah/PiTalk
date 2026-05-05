@@ -1186,7 +1186,10 @@ final class SpeechPlaybackCoordinator {
     static let googleVoicePool = ["george", "emma", "oliver", "sophia", "jack", "olivia"]
     static let elevenLabsVoicePool = ["ally", "dorothy", "lily", "alice", "dave", "joseph"]
     static let deepgramVoicePool = ["draco", "pandora", "hyperion", "theia", "angus"]
-    static let localVoicePool = ["fantine", "eponine", "cosette", "azelma", "alba"]
+    static let localVoicePool = [
+        "vera", "paul", "charles", "michael", "anna", "fantine", "eponine",
+        "cosette", "eve", "george", "mary"
+    ]
 
     private func synthesize(job: SpeechJob) async throws -> Data {
         switch Self.currentProvider {
@@ -2471,6 +2474,8 @@ final class LocalSpeechBroker {
             } else {
                 AgentStatusStore.shared.update(
                     pid: pid,
+                    sourceApp: request.sourceApp,
+                    sessionId: request.sessionId,
                     project: request.project,
                     cwd: request.cwd,
                     status: request.status ?? "unknown",
@@ -2904,7 +2909,12 @@ struct SettingsTabView: View {
     let deepgramVoices = ["draco", "pandora", "hyperion", "theia", "angus"]
 
     // Local on-device voices (pocket-tts)
-    let localVoices = ["fantine", "eponine", "cosette", "azelma", "alba"]
+    let localVoices = [
+        "alba", "vera", "paul", "charles", "michael", "anna",
+        "fantine", "eponine", "cosette", "eve", "george", "mary",
+        "marius", "javert", "azelma", "caro_davy", "peter_yearsley",
+        "stuart_bell"
+    ]
 
     private var availableVoices: [String] {
         switch currentProvider {
@@ -2976,7 +2986,7 @@ struct SettingsTabView: View {
         case .deepgram:
             return "Cloud API • Fast quality"
         case .local:
-            return "On-device Rust runtime • No API key • Bundled model or GitHub release download (~225MB)"
+            return "On-device Rust runtime • No API key • Bundled model or GitHub release download (~225MB) plus voice prompts"
         }
     }
 
@@ -3098,7 +3108,7 @@ struct SettingsTabView: View {
                                 .foregroundColor(localModelInstalled ? .green : .secondary)
                         }
 
-                        Button(localModelDownloading ? "Downloading…" : (localModelInstalled ? "Re-download Local Model" : "Download Local Model (~225 MB)")) {
+                        Button(localModelDownloading ? "Downloading…" : (localModelInstalled ? "Re-download Local Model + Voices" : "Download Local Model + Voices (~225 MB)")) {
                             downloadLocalModel()
                         }
                         .buttonStyle(.bordered)
@@ -3129,7 +3139,7 @@ struct SettingsTabView: View {
                             }
                         }
 
-                        Text("If bundled with the app, models are used offline immediately. Otherwise, PiTalk downloads a model pack from the matching GitHub release into this path.")
+                        Text("If bundled with the app, models are used offline immediately. Otherwise, PiTalk downloads a model pack from the matching GitHub release into this path, then caches supported voice prompts.")
                             .font(.caption)
                             .foregroundColor(.secondary)
 
@@ -3370,7 +3380,7 @@ struct SettingsTabView: View {
                     localModelDownloading = false
                     localModelInstalled = LocalTTSRuntime.shared.isModelInstalled()
                     localModelMessage = localModelInstalled
-                        ? "Local model downloaded successfully."
+                        ? "Local model and voices downloaded successfully."
                         : "Model download finished, but files were not detected."
                     localModelMessageColor = localModelInstalled ? .green : .orange
                 }
