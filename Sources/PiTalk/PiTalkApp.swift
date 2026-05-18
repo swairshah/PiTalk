@@ -794,13 +794,20 @@ final class SpeechPlaybackCoordinator {
             return state().pending
         }
 
+        let processed = PostProcessingRuleStore.shared
+            .apply(to: trimmed)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !processed.isEmpty else {
+            return state().pending
+        }
+
         let key = queueKey(sourceApp: sourceApp, sessionId: sessionId)
 
         return queue.sync {
             let resolvedVoice = resolveVoiceForQueueLocked(requestedVoice: voice, queueKey: key)
 
             let historyEntryId = RequestHistoryStore.shared.add(
-                text: trimmed,
+                text: processed,
                 voice: resolvedVoice,
                 sourceApp: sourceApp,
                 sessionId: sessionId,
@@ -809,7 +816,7 @@ final class SpeechPlaybackCoordinator {
 
             let job = SpeechJob(
                 historyEntryId: historyEntryId,
-                text: trimmed,
+                text: processed,
                 voice: resolvedVoice,
                 sourceApp: sourceApp,
                 sessionId: sessionId,
@@ -2525,6 +2532,11 @@ struct SettingsView: View {
             SettingsTabView()
                 .tabItem {
                     Label("Settings", systemImage: "gear")
+                }
+
+            PostProcessingTabView()
+                .tabItem {
+                    Label("Postprocessing", systemImage: "textformat")
                 }
 
             HistoryView()
