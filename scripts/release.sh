@@ -70,9 +70,12 @@ if ! command -v create-dmg &> /dev/null; then
     brew install create-dmg
 fi
 
-# 1. Update version in build script
+# 1. Update version in build script and source Info.plist. CFBundleVersion must
+# change on every release so LaunchServices and Dock invalidate cached artwork.
 echo -e "${YELLOW}📝 Updating version...${NC}"
 sed -i '' "s/^VERSION=\"[^\"]*\"/VERSION=\"${VERSION}\"/" scripts/build-app.sh
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION}" Sources/PiTalk/Info.plist
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${VERSION}" Sources/PiTalk/Info.plist
 
 # 2. Clean previous builds
 echo -e "${YELLOW}Cleaning previous builds...${NC}"
