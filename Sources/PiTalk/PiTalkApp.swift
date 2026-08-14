@@ -269,12 +269,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             let window = NSWindow(contentViewController: hostingController)
             window.title = "PiTalk"
-            window.styleMask = [.titled, .closable, .resizable, .miniaturizable]
+            window.styleMask = [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView]
             window.titleVisibility = .hidden
             window.titlebarAppearsTransparent = true
+            window.titlebarSeparatorStyle = .none
             window.isMovableByWindowBackground = true
-            window.setContentSize(NSSize(width: 520, height: 680))
-            window.minSize = NSSize(width: 420, height: 480)
+            window.setContentSize(NSSize(width: 900, height: 640))
+            window.minSize = NSSize(width: 780, height: 560)
             window.center()
 
             settingsWindow = window
@@ -2520,40 +2521,8 @@ final class LocalSpeechBroker {
 // MARK: - Settings View
 
 struct SettingsView: View {
-    @StateObject private var monitor = VoiceMonitor()
-
     var body: some View {
-        TabView {
-            SessionsTabView(monitor: monitor)
-                .tabItem {
-                    Label("Sessions", systemImage: "list.bullet")
-                }
-
-            SettingsTabView()
-                .tabItem {
-                    Label("Settings", systemImage: "gear")
-                }
-
-            PostProcessingTabView()
-                .tabItem {
-                    Label("Postprocessing", systemImage: "textformat")
-                }
-
-            HistoryView()
-                .tabItem {
-                    Label("History", systemImage: "clock")
-                }
-
-            PermissionsView()
-                .tabItem {
-                    Label("Permissions", systemImage: "lock.shield")
-                }
-
-            AboutView()
-                .tabItem {
-                    Label("About", systemImage: "info.circle")
-                }
-        }
+        MainWindowView()
     }
 }
 
@@ -2561,32 +2530,24 @@ struct SettingsView: View {
 
 struct SessionsTabView: View {
     @ObservedObject var monitor: VoiceMonitor
+    @StateObject private var audioRecorder = AudioRecorder()
+    @State private var recordingSessionId: String? = nil
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
-            HStack {
-                Circle()
-                    .fill(monitor.summary.uiColor)
-                    .frame(width: 12, height: 12)
-                Text(monitor.summary.label)
-                    .font(.headline)
+            // Pane header
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Sessions")
+                        .font(.system(size: 20, weight: .bold))
+                    Text(headerSubtitle)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
 
                 Spacer()
 
-                // Speed control
-                HStack(spacing: 4) {
-                    Image(systemName: "hare")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Slider(value: $monitor.speechSpeed, in: 0.7...2.0, step: 0.05)
-                        .frame(width: 80)
-                    Text(String(format: "%.1fx", monitor.speechSpeed))
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                }
-
-                // Server toggle
                 Toggle("", isOn: Binding(
                     get: { monitor.serverEnabled },
                     set: { newValue in
@@ -2596,68 +2557,94 @@ struct SessionsTabView: View {
                 ))
                 .toggleStyle(.switch)
                 .controlSize(.small)
+                .labelsHidden()
+                .help(monitor.serverEnabled ? "Listening — agents can reach PiTalk" : "Paused")
             }
-            .padding()
-
-            // Status pills
-            HStack(spacing: 8) {
-                StatusPill(text: "sessions: \(monitor.sessions.count)")
-                if monitor.speakingCount > 0 {
-                    StatusPill(text: "speaking: \(monitor.speakingCount)", color: .red)
-                }
-                if monitor.totalQueuedItems > 0 {
-                    StatusPill(text: "queued: \(monitor.totalQueuedItems)", color: .orange)
-                }
-                Spacer()
-            }
-            .padding(.horizontal)
-            .padding(.bottom, 8)
-
-            Divider()
+            .padding(.horizontal, 20)
+            .padding(.top, 24)
+            .padding(.bottom, 14)
 
             // Sessions list
             if monitor.sessions.isEmpty {
-                VStack {
+                VStack(spacing: 8) {
                     Spacer()
-                    Text("No active pi sessions")
+                    Image(systemName: "moon.zzz")
+                        .font(.system(size: 30, weight: .light))
+                        .foregroundStyle(.tertiary)
+                    Text("PiTalk is quiet")
+                        .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(.secondary)
-                    Text("Start a pi session to see it here")
-                        .font(.caption)
+                    Text("Start pi, claude-code, or codex — sessions appear here")
+                        .font(.system(size: 12))
                         .foregroundStyle(.tertiary)
                     Spacer()
                 }
+                .frame(maxWidth: .infinity)
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 8) {
+                    LazyVStack(spacing: 6) {
                         ForEach(monitor.sessions) { session in
-                            SessionRowView(session: session, monitor: monitor)
+                            SessionRowView(
+                                session: session,
+                                monitor: monitor,
+                                isRecordingThis: audioRecorder.isRecording && recordingSessionId == session.id,
+                                onMicPress: {
+                                    recordingSessionId = session.id
+                                    audioRecorder.startRecording()
+                                },
+                                onMicRelease: {
+                                    let target = session
+                                    if let audioData = audioRecorder.stopRecording() {
+                                        monitor.reportVoiceInputStatus("Transcribing voice input…")
+                                        SpeechToText.transcribe(audioData: audioData) { result in
+                                            if result.success, let text = result.text, !text.isEmpty {
+                                                monitor.sendText(to: target, text: text)
+                                            } else {
+                                                let error = result.error ?? "No speech recognized"
+                                                monitor.reportVoiceInputStatus("Voice input failed: \(error)")
+                                            }
+                                        }
+                                    } else {
+                                        monitor.reportVoiceInputStatus("No audio recorded — check microphone permission")
+                                    }
+                                    recordingSessionId = nil
+                                }
+                            )
                         }
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 12)
                 }
             }
 
-            Divider()
-
-            // Footer buttons
-            HStack {
-                Button("Stop All") {
-                    monitor.stopAll()
+            // Footer
+            HStack(spacing: 10) {
+                if monitor.speakingCount > 0 || monitor.totalQueuedItems > 0 {
+                    Button("Stop All") {
+                        monitor.stopAll()
+                    }
+                    .controlSize(.small)
                 }
-                .disabled(monitor.speakingCount == 0 && monitor.totalQueuedItems == 0)
-
-                Spacer()
 
                 if let message = monitor.lastMessage, !message.isEmpty {
                     Text(message)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
                 }
+
+                Spacer()
             }
-            .padding()
+            .padding(.horizontal, 20)
+            .padding(.vertical, 10)
         }
         .onAppear { monitor.start() }
+    }
+
+    private var headerSubtitle: String {
+        var parts = ["\(monitor.sessions.count) active"]
+        if monitor.totalQueuedItems > 0 { parts.append("\(monitor.totalQueuedItems) queued") }
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -2676,10 +2663,38 @@ struct StatusPill: View {
     }
 }
 
+/// Monochrome tag pill for the main window (mirrors the dropdown's TagPill).
+struct WindowTagPill: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 10.5))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1.5)
+            .background(Capsule().fill(Color.primary.opacity(0.07)))
+    }
+}
+
 struct SessionRowView: View {
     let session: VoiceSession
     @ObservedObject var monitor: VoiceMonitor
+    let isRecordingThis: Bool
+    let onMicPress: () -> Void
+    let onMicRelease: () -> Void
+
     @State private var isHovered = false
+    @State private var isExpanded = false
+    @State private var draft = ""
+    @FocusState private var inputFocused: Bool
+
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter
+    }()
 
     private var displayName: String {
         session.project.flatMap { looksReadable($0) ? $0 : nil }
@@ -2694,145 +2709,238 @@ struct SessionRowView: View {
         return !(hexDash.count > s.count / 2 && s.count > 8)
     }
 
+    private var messagePreview: String? {
+        if session.activity.isWorkStatus, let detail = session.statusDetail, !detail.isEmpty {
+            return detail
+        }
+        if let text = session.currentText ?? session.lastSpokenText {
+            return text.replacingOccurrences(of: "\n", with: " ")
+        }
+        return nil
+    }
+
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            // Status indicator
-            Circle()
-                .fill(session.activity.color)
-                .frame(width: 10, height: 10)
+        VStack(alignment: .leading, spacing: 0) {
+            // Card face
+            HStack(alignment: .top, spacing: 11) {
+                // Content — click to expand
+                Button {
+                    withAnimation(WindowTheme.Motion.smooth) { isExpanded.toggle() }
+                } label: {
+                    HStack(alignment: .top, spacing: 11) {
+                        AgentGlyph(sourceApp: session.sourceApp)
+                            .padding(.top, 1)
 
-            // Main content
-            VStack(alignment: .leading, spacing: 4) {
-                // Title row
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(displayName)
-                        .font(.system(.body, design: .default, weight: .semibold))
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                                Text(displayName)
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
 
-                    Text("·")
-                        .foregroundStyle(.tertiary)
+                                Text(session.activity.label.lowercased())
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
 
-                    Text(session.activity.label)
-                        .font(.subheadline)
-                        .foregroundStyle(session.activity.color)
+                                if session.queuedCount > 0 {
+                                    WindowTagPill(text: "\(session.queuedCount) queued")
+                                }
+
+                                Spacer(minLength: 8)
+
+                                if let lastAt = session.lastSpokenAt {
+                                    Text(Self.relativeFormatter.localizedString(for: lastAt, relativeTo: Date()))
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.tertiary)
+                                }
+                            }
+
+                            if let preview = messagePreview {
+                                Text(preview)
+                                    .font(.system(size: 12.5))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(isExpanded ? 8 : 2)
+                                    .truncationMode(.tail)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .multilineTextAlignment(.leading)
+                            }
+
+                            if isExpanded {
+                                HStack(spacing: 10) {
+                                    if let pid = session.pid {
+                                        Text("pid \(String(pid))")
+                                    }
+                                    if let cwd = session.cwd {
+                                        Text(cwd.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                    }
+                                    if let sid = session.sessionId, looksReadable(sid) {
+                                        Text(String(sid.prefix(24)))
+                                            .lineLimit(1)
+                                    }
+                                }
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                                .padding(.top, 3)
+                            }
+                        }
+                    }
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
 
-                // Detail line: prefer live status detail while running, then speech text
-                if session.activity.isWorkStatus, let detail = session.statusDetail, !detail.isEmpty {
-                    Text(detail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .truncationMode(.tail)
-                } else if let text = session.currentText ?? session.lastSpokenText {
-                    Text(text)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .truncationMode(.tail)
-                }
-
-                // Metadata row
-                HStack(spacing: 12) {
-                    Label {
-                        Text(session.sourceApp)
-                            .font(.caption2)
-                    } icon: {
-                        Image(systemName: "terminal")
-                            .font(.system(size: 8))
-                    }
-                    .foregroundStyle(.tertiary)
-
-                    if let pid = session.pid {
-                        Label {
-                            Text("\(pid)")
-                                .font(.system(.caption2, design: .monospaced))
-                        } icon: {
-                            Image(systemName: "number")
-                                .font(.system(size: 8))
+                // Actions — always on the face, outside the expand button
+                if session.pid != nil {
+                    HStack(spacing: 5) {
+                        Button {
+                            monitor.jump(to: session)
+                        } label: {
+                            Image(systemName: "arrow.up.forward.square")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 26, height: 24)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .fill(Color.primary.opacity(0.07))
+                                )
                         }
-                        .foregroundStyle(.tertiary)
-                    }
+                        .buttonStyle(PressableIconStyle())
+                        .help("Jump to this agent's terminal")
 
-                    if let sid = session.sessionId, looksReadable(sid) {
-                        Label {
-                            Text(String(sid.prefix(14)))
-                                .font(.caption2)
-                        } icon: {
-                            Image(systemName: "number.square")
-                                .font(.system(size: 8))
-                        }
-                        .foregroundStyle(.tertiary)
+                        MicButton(
+                            isRecording: isRecordingThis,
+                            onPress: onMicPress,
+                            onRelease: onMicRelease
+                        )
+                        .help("Hold to dictate — speech is transcribed and sent")
                     }
-
-                    if let voice = session.voice {
-                        Label {
-                            Text(voice)
-                                .font(.caption2)
-                        } icon: {
-                            Image(systemName: "waveform")
-                                .font(.system(size: 8))
-                        }
-                        .foregroundStyle(.tertiary)
-                    }
-
-                    if session.queuedCount > 0 {
-                        Label {
-                            Text("\(session.queuedCount) queued")
-                                .font(.caption2)
-                        } icon: {
-                            Image(systemName: "text.badge.plus")
-                                .font(.system(size: 8))
-                        }
-                        .foregroundStyle(.orange)
-                    }
+                    .padding(.top, 1)
                 }
             }
+            .padding(.horizontal, 13)
+            .padding(.vertical, 10)
 
-            Spacer()
-
-            // Jump button
-            if session.pid != nil {
-                Button {
-                    monitor.jump(to: session)
-                } label: {
-                    Text("Jump")
-                        .font(.caption.weight(.medium))
-                        .padding(.horizontal, 12)
+            // Expanded: reply bar
+            if isExpanded, session.pid != nil {
+                HStack(spacing: 6) {
+                    TextField("Message \(session.sourceApp)…", text: $draft)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12.5))
+                        .focused($inputFocused)
+                        .onSubmit(sendDraft)
+                        .padding(.horizontal, 9)
                         .padding(.vertical, 6)
                         .background(
                             RoundedRectangle(cornerRadius: 6)
-                                .fill(Color.accentColor.opacity(isHovered ? 0.2 : 0.1))
+                                .fill(Color.primary.opacity(0.05))
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: 6)
-                                .stroke(Color.accentColor.opacity(0.3), lineWidth: 1)
+                                .strokeBorder(Color.primary.opacity(inputFocused ? 0.18 : 0.08), lineWidth: 1)
                         )
+
+                    Button(action: sendDraft) {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 18))
+                            .foregroundStyle(draft.trimmingCharacters(in: .whitespaces).isEmpty
+                                ? Color.secondary.opacity(0.4)
+                                : Color.accentColor)
+                    }
+                    .buttonStyle(PressableIconStyle())
+                    .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .help("Send to session (Return)")
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(Color.accentColor)
+                .padding(.horizontal, 13)
+                .padding(.bottom, 11)
+                .onAppear { inputFocused = true }
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
         .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color(nsColor: .controlBackgroundColor).opacity(isHovered ? 1 : 0.5))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.primary.opacity(isExpanded || isHovered ? 0.06 : 0.03))
         )
         .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.15)) {
+            withAnimation(.easeOut(duration: 0.15)) {
                 isHovered = hovering
             }
         }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            if session.pid != nil {
-                monitor.jump(to: session)
+    }
+
+    private func sendDraft() {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        monitor.sendText(to: session, text: text)
+        draft = ""
+    }
+}
+
+/// Small agent identity glyph — anchors each session row.
+/// pi gets its pixel wordmark; other agents get a quiet two-letter mark.
+struct AgentGlyph: View {
+    let sourceApp: String
+
+    private var textSymbol: String? {
+        switch sourceApp.lowercased() {
+        case "pi": return nil  // pixel mark
+        case "claude-code", "claude": return "cl"
+        case "codex": return "cx"
+        case "mnote": return "mn"
+        default: return String(sourceApp.prefix(2)).lowercased()
+        }
+    }
+
+    var body: some View {
+        Group {
+            if let textSymbol {
+                Text(textSymbol)
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+            } else {
+                PiMarkShape()
+                    .fill(Color.secondary)
+                    .frame(width: 13, height: 13)
             }
         }
+        .frame(width: 28, height: 28)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color.primary.opacity(0.06))
+        )
+    }
+}
+
+/// Pi's pixel wordmark — a 4×4 cell grid forming "Pi".
+/// Drawn as a shape so it stays crisp at any size and tints like text.
+struct PiMarkShape: Shape {
+    /// Filled cells (col, row) of the mark:
+    /// ███·   P top bar
+    /// █·█·   bowl sides
+    /// ██·█   bowl bottom + i
+    /// █··█   stem + i
+    static let cells: [(col: Int, row: Int)] = [
+        (0, 0), (1, 0), (2, 0),
+        (0, 1), (2, 1),
+        (0, 2), (1, 2), (3, 2),
+        (0, 3), (3, 3),
+    ]
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let cell = min(rect.width, rect.height) / 4
+        let originX = rect.midX - cell * 2
+        let originY = rect.midY - cell * 2
+        // Cells overlap by a hair to avoid antialiased seams between neighbors.
+        let bleed = cell * 0.02
+        for (col, row) in Self.cells {
+            path.addRect(CGRect(
+                x: originX + CGFloat(col) * cell,
+                y: originY + CGFloat(row) * cell,
+                width: cell + bleed,
+                height: cell + bleed
+            ))
+        }
+        return path
     }
 }
 
@@ -4308,91 +4416,132 @@ struct PermissionRowView: View {
 // MARK: - About View
 
 struct AboutView: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var version: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+    }
+
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                VStack(spacing: 6) {
-                    Image(nsImage: NSApp.applicationIconImage)
+            VStack(spacing: 28) {
+                // Hero
+                VStack(spacing: 10) {
+                    Image(nsImage: NSApp.applicationIconImage ?? NSImage())
                         .resizable()
-                        .frame(width: 56, height: 56)
+                        .frame(width: 96, height: 96)
+                        .shadow(color: .black.opacity(colorScheme == .dark ? 0.5 : 0.18), radius: 14, y: 6)
+
                     Text("PiTalk")
-                        .font(.title3)
-                        .fontWeight(.semibold)
-                    Text("Voice for Pi")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                        .font(.system(size: 26, weight: .bold))
+
+                    Text("A voice companion for your coding agents")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.secondary)
+
+                    Text("Version \(version)")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.tertiary)
+                        .monospacedDigit()
+                        .padding(.top, 2)
+
+                    // Link pills
+                    HStack(spacing: 8) {
+                        AboutLinkPill(label: "GitHub", icon: "chevron.left.forwardslash.chevron.right", url: "https://github.com/swairshah/PiTalk")
+                        AboutLinkPill(label: "Issues", icon: "ant", url: "https://github.com/swairshah/PiTalk/issues")
+                        AboutLinkPill(label: "Releases", icon: "shippingbox", url: "https://github.com/swairshah/PiTalk/releases")
+                    }
+                    .padding(.top, 8)
                 }
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 2)
+                .padding(.top, 36)
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("About")
-                        .font(.title2)
-                        .fontWeight(.semibold)
-                    Text("PiTalk is a macOS menu bar voice companion for Pi. The pi-talk extension sends real-time status events and routes <voice> output into the PiTalk speech queue.")
-                        .font(.callout)
-                        .foregroundColor(.secondary)
-                }
+                VStack(alignment: .leading, spacing: 14) {
+                    AboutCard(title: "What it does", icon: "bell.badge") {
+                        Text("PiTalk turns agent output into a shared speech queue for pi, claude-code, codex, and other local tools. Follow live work, jump to a terminal, and reply by text or voice without leaving what you’re doing.")
+                    }
 
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Required Pi Extensions")
-                        .font(.headline)
-                    Text("Install these in Pi for full functionality:")
-                        .font(.callout)
-                        .foregroundColor(.secondary)
+                    AboutCard(title: "Connect Pi", icon: "puzzlepiece.extension") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Install the Pi extension to route `<voice>` output and real-time session status into PiTalk. The local broker also accepts compatible clients over its documented IPC interface.")
+                            CodeRow(code: "pi install npm:@swairshah/pi-talk", description: "Voice routing + status events")
+                            CodeRow(code: "brew install --cask swairshah/tap/pitalk", description: "Install / update PiTalk")
+                        }
+                    }
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        CodeRow(code: "pi install npm:@swairshah/pi-talk", description: "Voice routing + status events")
+                    AboutCard(title: "Credits", icon: "heart") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Status/jump UX inspired by Pi Status Bar.")
+                            Link("github.com/jademind/pi-statusbar", destination: URL(string: "https://github.com/jademind/pi-statusbar")!)
+                                .font(.system(size: 12))
+                        }
                     }
                 }
-                .padding()
-                .background(Color(NSColor.controlBackgroundColor))
-                .cornerRadius(10)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(Color.secondary.opacity(0.1), lineWidth: 1)
-                )
+                .frame(maxWidth: 520)
 
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Credits")
-                        .font(.headline)
-                    Text("PiTalk’s status/jump UX is heavily inspired by Pi Status Bar.")
-                        .font(.callout)
-                        .foregroundColor(.secondary)
-                    Link("github.com/jademind/pi-statusbar", destination: URL(string: "https://github.com/jademind/pi-statusbar")!)
-                        .font(.caption)
-                }
-                .padding()
-                .background(Color(NSColor.controlBackgroundColor))
-                .cornerRadius(10)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(Color.secondary.opacity(0.1), lineWidth: 1)
-                )
-
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Project Repository")
-                        .font(.headline)
-                    Text("PiTalk is maintained at the repository below. You can open issues, request features, and report bugs there.")
-                        .font(.callout)
-                        .foregroundColor(.secondary)
-                    Link("github.com/swairshah/PiTalk", destination: URL(string: "https://github.com/swairshah/PiTalk")!)
-                        .font(.caption)
-                    Link("github.com/swairshah/PiTalk/issues", destination: URL(string: "https://github.com/swairshah/PiTalk/issues")!)
-                        .font(.caption)
-                }
-                .padding()
-                .background(Color(NSColor.controlBackgroundColor))
-                .cornerRadius(10)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(Color.secondary.opacity(0.1), lineWidth: 1)
-                )
-
-                Spacer(minLength: 8)
+                Spacer(minLength: 24)
             }
-            .padding()
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 24)
         }
+    }
+}
+
+private struct AboutLinkPill: View {
+    let label: String
+    let icon: String
+    let url: String
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button {
+            if let target = URL(string: url) { NSWorkspace.shared.open(target) }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: icon)
+                    .font(.system(size: 10.5, weight: .medium))
+                Text(label)
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .foregroundStyle(isHovering ? Color.primary : Color.secondary)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 5)
+            .background(Capsule().fill(Color.primary.opacity(isHovering ? 0.1 : 0.06)))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(WindowTheme.Motion.hover) { isHovering = hovering }
+        }
+    }
+}
+
+private struct AboutCard<Content: View>: View {
+    let title: String
+    let icon: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            content
+                .font(.system(size: 12.5))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.primary.opacity(0.04))
+        )
     }
 }
 
