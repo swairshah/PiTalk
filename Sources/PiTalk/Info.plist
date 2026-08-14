@@ -29,6 +29,8 @@
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>PiTalk needs microphone access to record voice commands for pi sessions.</string>
+    <string>PiTalk needs microphone access to record voice commands for agent sessions.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>PiTalk uses on-device speech recognition to turn voice commands into text.</string>
 </dict>
 </plist>

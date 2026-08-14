@@ -310,6 +310,10 @@ final class VoiceMonitor: ObservableObject {
         }
     }
 
+    func reportVoiceInputStatus(_ message: String) {
+        lastMessage = message
+    }
+
     // MARK: - Build Sessions
 
     private static func buildSessions(

@@ -360,15 +360,20 @@ struct StatusBarContentView: View {
                             let targetSession = session
                             if let audioData = audioRecorder.stopRecording() {
                                 print("PiTalk: Got \(audioData.count) bytes of audio, transcribing...")
+                                monitor.reportVoiceInputStatus("Transcribing voice input...")
                                 
                                 SpeechToText.transcribe(audioData: audioData) { result in
                                     if result.success, let text = result.text, !text.isEmpty {
                                         print("PiTalk: Transcribed: \(text)")
                                         monitor.sendText(to: targetSession, text: text)
                                     } else {
-                                        print("PiTalk: Transcription failed: \(result.error ?? "unknown")")
+                                        let error = result.error ?? "No speech recognized"
+                                        print("PiTalk: Transcription failed: \(error)")
+                                        monitor.reportVoiceInputStatus("Voice input failed: \(error)")
                                     }
                                 }
+                            } else {
+                                monitor.reportVoiceInputStatus("No audio recorded — check microphone permission")
                             }
                             recordingForSession = nil
                         }

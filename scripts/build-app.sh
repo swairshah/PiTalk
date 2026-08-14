@@ -170,7 +170,9 @@ cat > "$APP_DIR/Contents/Info.plist" << EOF
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>PiTalk monitors microphone activity to pause speech when you're talking.</string>
+    <string>PiTalk needs microphone access to record voice commands for agent sessions.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>PiTalk uses on-device speech recognition to turn voice commands into text.</string>
 </dict>
 </plist>
 EOF
