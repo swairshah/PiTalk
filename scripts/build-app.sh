@@ -133,9 +133,23 @@ else
     echo "   The app may fail to launch without its resource bundle."
 fi
 
-# Copy menubar icons (also keep at top level for backward compat)
+# Copy menubar icons at the top level for backward compatibility and overwrite
+# the copies inside Bundle.module. SwiftPM can leave stale resource files in an
+# incremental build even when the source PNGs have changed.
 cp Sources/PiTalk/Resources/menubar_on.png "$APP_DIR/Contents/Resources/"
 cp Sources/PiTalk/Resources/menubar_off.png "$APP_DIR/Contents/Resources/"
+
+BUNDLE_RESOURCE_DIR="$APP_DIR/Contents/Resources/PiTalk_PiTalk.bundle/Contents/Resources/Resources"
+if [ -d "$BUNDLE_RESOURCE_DIR" ]; then
+    cp Sources/PiTalk/Resources/menubar_on.png "$BUNDLE_RESOURCE_DIR/menubar_on.png"
+    cp Sources/PiTalk/Resources/menubar_off.png "$BUNDLE_RESOURCE_DIR/menubar_off.png"
+    cmp -s Sources/PiTalk/Resources/menubar_on.png "$BUNDLE_RESOURCE_DIR/menubar_on.png"
+    cmp -s Sources/PiTalk/Resources/menubar_off.png "$BUNDLE_RESOURCE_DIR/menubar_off.png"
+    echo "Refreshed Bundle.module menubar icons from source assets"
+else
+    echo "⚠️  Bundle.module resource directory not found: $BUNDLE_RESOURCE_DIR"
+    exit 1
+fi
 
 # Create Info.plist (note: no quotes around EOF to allow variable expansion)
 cat > "$APP_DIR/Contents/Info.plist" << EOF
