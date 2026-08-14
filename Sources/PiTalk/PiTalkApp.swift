@@ -2462,7 +2462,7 @@ final class LocalSpeechBroker {
                 voice: request.voice,
                 sourceApp: request.sourceApp,
                 sessionId: request.sessionId,
-                pid: request.pid
+                pid: AgentProcessResolver.canonicalPid(for: request.pid, sourceApp: request.sourceApp)
             )
             send(response: .success(queued: queued), on: connection)
 
@@ -2472,7 +2472,7 @@ final class LocalSpeechBroker {
             send(response: .success(pending: state.pending, playing: state.playing, currentQueue: state.currentQueue), on: connection)
 
         case "status":
-            guard let pid = request.pid else {
+            guard let pid = AgentProcessResolver.canonicalPid(for: request.pid, sourceApp: request.sourceApp) else {
                 send(response: .failure("Missing pid for status"), on: connection)
                 return
             }

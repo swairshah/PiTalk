@@ -61,6 +61,35 @@ final class JumpHandler {
         let name: String
         let cwd: String
     }
+
+    private struct HerdrAgentListResponse: Decodable {
+        struct Result: Decodable {
+            let agents: [Agent]
+        }
+
+        struct Agent: Decodable {
+            let paneId: String
+        }
+
+        let result: Result
+    }
+
+    private struct HerdrProcessInfoResponse: Decodable {
+        struct Result: Decodable {
+            let processInfo: ProcessInfo
+        }
+
+        struct ProcessInfo: Decodable {
+            struct ForegroundProcess: Decodable {
+                let pid: Int
+            }
+
+            let shellPid: Int?
+            let foregroundProcesses: [ForegroundProcess]?
+        }
+
+        let result: Result
+    }
     
     // MARK: - Public API
     
@@ -88,6 +117,12 @@ final class JumpHandler {
     
     private func performJump(pid: Int) -> JumpResult {
         NSLog("JumpHandler: performJump starting for PID %d", pid)
+
+        // Herdr owns its agents' PTYs in a detached server process. Select the
+        // matching Herdr pane before trying ordinary terminal ancestry/TTY paths.
+        if let result = jumpViaHerdr(pid: pid) {
+            return result
+        }
         
         // Fast path: Try Ghostty scripting API first (v1.3.0+).
         // This is the most direct route — queries Ghostty for all terminals,
@@ -240,6 +275,120 @@ final class JumpHandler {
         )
     }
     
+    // MARK: - Herdr Support
+
+    /// Focus a Herdr-managed agent by matching the target PID against the live
+    /// foreground process metadata exposed for each agent pane.
+    private func jumpViaHerdr(pid: Int) -> JumpResult? {
+        guard let listData = runHerdr(["agent", "list"]),
+              let list = decodeHerdr(HerdrAgentListResponse.self, from: listData) else {
+            return nil
+        }
+
+        var targetPaneId: String?
+        for agent in list.result.agents {
+            guard let infoData = runHerdr(["pane", "process-info", "--pane", agent.paneId]),
+                  let info = decodeHerdr(HerdrProcessInfoResponse.self, from: infoData) else {
+                continue
+            }
+
+            let processInfo = info.result.processInfo
+            if processInfo.shellPid == pid ||
+                processInfo.foregroundProcesses?.contains(where: { $0.pid == pid }) == true {
+                targetPaneId = agent.paneId
+                break
+            }
+        }
+
+        guard let targetPaneId else { return nil }
+        NSLog("JumpHandler: Herdr matched PID %d to pane %@", pid, targetPaneId)
+
+        guard runHerdr(["agent", "focus", targetPaneId]) != nil else {
+            return JumpResult(
+                ok: false,
+                focused: false,
+                focusedApp: "Herdr",
+                openedShell: false,
+                message: "Found Herdr pane \(targetPaneId), but could not select it"
+            )
+        }
+
+        let focusedHost = focusHerdrClientTerminal()
+        return JumpResult(
+            ok: focusedHost,
+            focused: focusedHost,
+            focusedApp: focusedHost ? "Herdr" : nil,
+            openedShell: false,
+            message: focusedHost
+                ? "Focused Herdr pane \(targetPaneId)"
+                : "Selected Herdr pane \(targetPaneId), but could not focus its terminal"
+        )
+    }
+
+    private func focusHerdrClientTerminal() -> Bool {
+        if let terminals = queryGhosttyTerminals() {
+            let matches = terminals.filter { terminal in
+                let name = terminal.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                return name == "herdr" || name.hasPrefix("herdr ") || name.hasPrefix("herdr—")
+            }
+            if matches.count == 1 {
+                return focusGhosttyTerminal(id: matches[0].id)
+            }
+        }
+
+        // Terminal.app and iTerm2 expose their tab TTYs directly. The attached
+        // Herdr client has a TTY; the detached `herdr server` process does not.
+        let clients = scanProcesses().filter { process in
+            let executable = URL(fileURLWithPath: process.comm).lastPathComponent.lowercased()
+            let args = process.args.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return executable == "herdr" && process.tty != "??" &&
+                args != "herdr server" && !args.hasSuffix("/herdr server")
+        }
+        if clients.count == 1 {
+            return focusTerminalByTTY(clients[0].tty)
+        }
+
+        return false
+    }
+
+    private func herdrExecutableURL() -> URL? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let candidates = [
+            "/opt/homebrew/bin/herdr",
+            "/usr/local/bin/herdr",
+            "\(home)/.local/bin/herdr",
+        ]
+        return candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) })
+            .map { URL(fileURLWithPath: $0) }
+    }
+
+    private func runHerdr(_ arguments: [String]) -> Data? {
+        guard let executableURL = herdrExecutableURL() else { return nil }
+
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = executableURL
+        process.arguments = arguments
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return process.terminationStatus == 0 ? data : nil
+    }
+
+    private func decodeHerdr<T: Decodable>(_ type: T.Type, from data: Data) -> T? {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try? decoder.decode(type, from: data)
+    }
+
     // MARK: - cmux (Ghostty Multiplexer) Support
     
     /// Default cmux Unix socket path
