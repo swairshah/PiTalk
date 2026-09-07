@@ -1,0 +1,13 @@
+{
+  "name": "claude-talk",
+  "version": "1.1.0",
+  "description": "Text-to-speech for Claude Code. Speaks <voice> tagged content through the local PiTalk macOS app.",
+  "author": {
+    "name": "Swair Shah",
+    "email": "swairshah@gmail.com"
+  },
+  "homepage": "https://github.com/swairshah/PiTalk#claude-code",
+  "repository": "https://github.com/swairshah/PiTalk",
+  "license": "MIT",
+  "keywords": ["tts", "speech", "audio", "voice", "pitalk", "accessibility"]
+}
