@@ -22,13 +22,34 @@ brew install --cask pitalk
 
 Then launch PiTalk from Applications (or via Spotlight) and start sending broker requests.
 
-### Pi extensions
+## Agent integrations
 
-To use PiTalk with Pi, install the pi-talk and [`pi-telemetry`](https://github.com/jademind/pi-telemetry) extensions:
+### Pi
+
+Install the pi-talk and [`pi-telemetry`](https://github.com/jademind/pi-telemetry) extensions:
 
 ```bash
 pi install npm:@swairshah/pi-talk
 pi install npm:@jademind/pi-telemetry
+```
+
+Restart Pi after installation. The pi-talk extension sends `<voice>` content and live status events to the local PiTalk app.
+
+### Claude Code
+
+This repository includes the ClaudeTalk plugin. From the `pi-talk-app` directory, install it with:
+
+```bash
+cd ~/work/projects/pi-talk-app
+./scripts/setup-claude-talk.sh install
+```
+
+Start this checkout's app with `./run-dev.sh`, then restart Claude Code. ClaudeTalk connects to PiTalk on `127.0.0.1:18080` and `127.0.0.1:18081`, so it works with the development app and the Homebrew app.
+
+To remove the plugin without removing PiTalk:
+
+```bash
+./scripts/setup-claude-talk.sh uninstall
 ```
 
 ## What this app does
@@ -97,6 +118,7 @@ Protocol docs:
 ## Pi-specific pieces in this repo
 
 - **`Extensions/pi-talk`** - extracts `<voice>` tags from Pi responses and sends them to PiTalk
+- **`Extensions/claude-talk`** - connects Claude Code to the same local PiTalk broker
 - **`Sources/PiTalk`** - menu bar app + broker + playback coordinator
 - **`Sources/ptts`** - CLI client for enqueueing/stopping speech
 - **`Sources/PiTalkClient`** - shared client helpers
